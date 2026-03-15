@@ -1,0 +1,175 @@
+{
+  "projectType": "framework",
+  "projectName": "Colyseus",
+  "projectDescription": "Authoritative multiplayer game server framework for Node.js with real-time state synchronization, room-based matchmaking, and multi-platform client SDKs.",
+  "theme": "maple",
+  "primaryColor": "#7e3de1",
+  "lightColor": "#c699e2",
+  "darkColor": "#7a40d7",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Getting Started",
+        "groups": [
+          {
+            "group": "Introduction",
+            "pages": [
+              "introduction",
+              "getting-started/installation",
+              "getting-started/quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/rooms",
+              "concepts/state-sync",
+              "concepts/matchmaking",
+              "concepts/client-server"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Server",
+        "groups": [
+          {
+            "group": "Server Setup",
+            "pages": [
+              "server/overview",
+              "server/configuration",
+              "server/transport"
+            ]
+          },
+          {
+            "group": "Room API",
+            "pages": [
+              "server/room",
+              "server/room-lifecycle",
+              "server/room-state",
+              "server/room-messages",
+              "server/built-in-rooms"
+            ]
+          },
+          {
+            "group": "Matchmaking",
+            "pages": [
+              "server/matchmaker",
+              "server/presence",
+              "server/drivers"
+            ]
+          },
+          {
+            "group": "Authentication",
+            "pages": [
+              "server/auth/overview",
+              "server/auth/jwt",
+              "server/auth/oauth"
+            ]
+          },
+          {
+            "group": "Scaling",
+            "pages": [
+              "server/scaling/overview",
+              "server/scaling/redis"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Client SDK",
+        "groups": [
+          {
+            "group": "JavaScript / TypeScript",
+            "pages": [
+              "client/overview",
+              "client/installation",
+              "client/connecting",
+              "client/room",
+              "client/auth"
+            ]
+          },
+          {
+            "group": "Game Engines",
+            "pages": [
+              "client/unity",
+              "client/godot",
+              "client/gamemaker",
+              "client/defold",
+              "client/construct3"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "State Schema",
+        "groups": [
+          {
+            "group": "Schema Overview",
+            "pages": [
+              "state/overview",
+              "state/schema-definition",
+              "state/callbacks",
+              "state/collections"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Deployment",
+        "groups": [
+          {
+            "group": "Deploy",
+            "pages": [
+              "deployment/overview",
+              "deployment/colyseus-cloud",
+              "deployment/self-hosted"
+            ]
+          },
+          {
+            "group": "Monitoring",
+            "pages": [
+              "deployment/monitor",
+              "deployment/loadtest"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Authoritative server-side game logic for cheat-proof multiplayer",
+    "Automatic real-time state synchronization with delta compression and binary encoding",
+    "Room-based matchmaking with filtering, queuing, and reconnection support",
+    "Horizontal scalability with Redis driver and presence for multi-process deployments",
+    "Multi-platform client SDKs: TypeScript, Unity, Godot, GameMaker, Defold, Construct 3, Haxe",
+    "Built-in authentication with JWT, OAuth, and email/password support",
+    "Multiple transport options: WebSocket (ws), uWebSockets, Bun, TCP",
+    "Dev mode with room state persistence and automatic client reconnection on server restart",
+    "Built-in rooms: LobbyRoom, RelayRoom, QueueRoom",
+    "Monitor dashboard for real-time server inspection"
+  ],
+  "publicApiSurface": [
+    "Server (class) - main server entry point",
+    "Room (class) - base class for defining game rooms",
+    "room() / defineRoom() - room registration helpers",
+    "defineServer() - server factory function",
+    "listen() - start server and listen on port",
+    "matchMaker - matchmaking API (createRoom, joinOrCreate, findOneRoomAvailable, etc.)",
+    "Client (interface) - connected client representation",
+    "Transport (abstract class) - pluggable transport layer",
+    "LocalPresence / RedisPresence - presence backends",
+    "LocalDriver / RedisDriver / MongooseDriver - matchmaker storage drivers",
+    "auth() - authentication middleware factory",
+    "JWT (class) - JSON Web Token utilities",
+    "LobbyRoom / RelayRoom / QueueRoom - built-in room implementations",
+    "createEndpoint() / createRouter() - HTTP endpoint definition",
+    "ColyseusSDK / Client (client-side) - JS/TS client SDK entry points",
+    "Room (client-side class) - client-side room connection",
+    "Auth (client-side class) - client-side authentication",
+    "validate() - message schema validation helper",
+    "Clock / Delayed - server-side timer utilities",
+    "ServerError - typed server error class"
+  ]
+}
