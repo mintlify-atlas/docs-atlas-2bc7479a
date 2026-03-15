@@ -1,0 +1,124 @@
+---
+title: "Introduction"
+description: "Colyseus is an authoritative multiplayer framework for Node.js with real-time state synchronization, room-based matchmaking, and multi-platform client SDKs."
+---
+
+Colyseus is an authoritative multiplayer game server framework for Node.js. You define your game state on the server, and it synchronizes automatically to all connected clients — delta-compressed and binary-encoded in real time.
+
+The framework handles matchmaking, room lifecycle, reconnection, and network transport so you can focus on your game logic.
+
+## What Colyseus does
+
+At its core, Colyseus gives you three things:
+
+- **A server-side `Room` class** — the unit of your game session. Each room holds state, handles client connections, processes messages, and runs your game logic.
+- **Automatic state synchronization** — define your game state using `@colyseus/schema`, and every change is sent to clients as a binary delta patch. Clients always see the latest state without you writing any serialization code.
+- **Built-in matchmaking** — clients call `client.joinOrCreate("room_name")` and the server finds or creates the right room. You can filter rooms by metadata, cap the number of players, and handle reconnection out of the box.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Real-time state sync" icon="bolt">
+    State defined with `@colyseus/schema` is delta-compressed and binary-encoded. Only changed fields are sent on each tick, keeping bandwidth minimal even at 20 patches per second.
+  </Card>
+  <Card title="Room-based architecture" icon="grid-2x2">
+    Every game session is a `Room`. Rooms are created on demand by the matchmaker, hold their own state and clock, and are disposed automatically when the last client leaves.
+  </Card>
+  <Card title="Authoritative server" icon="shield">
+    All game logic runs on the server. Clients send inputs; the server validates and applies them. This eliminates entire classes of cheating that peer-to-peer or client-authoritative models are vulnerable to.
+  </Card>
+  <Card title="Built-in matchmaking" icon="users">
+    Clients join rooms by name with optional filter options. The matchmaker finds an available room or creates a new one. Rooms can be locked, capped, and filtered by metadata.
+  </Card>
+  <Card title="Reconnection support" icon="rotate">
+    Call `allowReconnection(client, timeout)` inside `onLeave` to hold a seat open. The client SDK reconnects automatically and the player resumes their session.
+  </Card>
+  <Card title="Scalable" icon="chart-line">
+    A single process handles thousands of concurrent connections. Scale horizontally across multiple nodes using `@colyseus/redis-driver` and `@colyseus/redis-presence`.
+  </Card>
+  <Card title="Multi-platform SDKs" icon="code">
+    Client SDKs are available for TypeScript/JavaScript, Unity, Godot, GameMaker, Defold, Construct 3, Haxe, and C. The server API is identical regardless of which client you use.
+  </Card>
+  <Card title="MIT licensed" icon="check">
+    Free to use in commercial projects with no royalties, no per-seat pricing, and no vendor lock-in.
+  </Card>
+</CardGroup>
+
+## A room in code
+
+A Colyseus server is built around `Room` subclasses. Here is a minimal example that tracks a shared counter and lets any client increment it:
+
+```typescript
+import { Room, Client } from "@colyseus/core";
+import { Schema, type } from "@colyseus/schema";
+
+class GameState extends Schema {
+  @type("number") count: number = 0;
+}
+
+export class GameRoom extends Room<{ state: GameState }> {
+  onCreate(options: any) {
+    this.setState(new GameState());
+
+    this.onMessage("increment", (client, message) => {
+      this.state.count++;
+    });
+  }
+
+  onJoin(client: Client) {
+    console.log(client.sessionId, "joined!");
+  }
+
+  onLeave(client: Client) {
+    console.log(client.sessionId, "left!");
+  }
+}
+```
+
+Every time a client sends an `"increment"` message, `state.count` increments on the server and the updated value is patched to all connected clients automatically. No manual broadcast, no serialization.
+
+On the client side, connecting and listening for state changes looks like this:
+
+```typescript
+import { Client } from "@colyseus/sdk";
+
+const client = new Client("ws://localhost:2567");
+const room = await client.joinOrCreate("game_room");
+
+room.state.listen("count", (newValue) => {
+  console.log("count is now", newValue);
+});
+
+// Send a message to the server
+room.send("increment");
+```
+
+## How Colyseus compares to alternatives
+
+| | Colyseus | Socket.IO | Photon | Mirror (Unity) |
+|---|---|---|---|---|
+| **Model** | Authoritative server | Event bus | Authoritative server | Client-authoritative (relay) |
+| **State sync** | Automatic, delta-compressed | Manual | Automatic | Manual |
+| **Matchmaking** | Built-in | Not included | Built-in | Not included |
+| **Language** | TypeScript / Node.js | TypeScript / Node.js | C# / .NET | C# / Unity |
+| **Multi-platform clients** | Yes (10+ platforms) | Yes (limited engines) | Yes | Unity only |
+| **License** | MIT | MIT | Commercial | MIT |
+
+Unlike Socket.IO, Colyseus provides first-class state synchronization and matchmaking. Unlike Photon, it is open source and you run your own servers. Unlike Mirror, it is not tied to a single engine and runs server logic outside the game client.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/getting-started/installation">
+    Install Colyseus and scaffold your first project.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/getting-started/quickstart">
+    Build and connect your first game room in minutes.
+  </Card>
+  <Card title="Server API" icon="server" href="/server/overview">
+    Explore rooms, transports, presence, drivers, and authentication.
+  </Card>
+  <Card title="Client SDK" icon="code" href="/client/overview">
+    Connect from TypeScript, Unity, Godot, and more.
+  </Card>
+</CardGroup>

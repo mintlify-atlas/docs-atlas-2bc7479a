@@ -1,0 +1,276 @@
+---
+title: "Schema definition"
+description: "Defining state schemas with @colyseus/schema: primitive types, nested schemas, collections, the @type() decorator, and the functional schema() API."
+---
+
+A schema is a class that extends `Schema` and declares which fields are synchronized. Only decorated (or functionally-defined) fields are tracked — any plain class property you add without an annotation is ignored by the serializer.
+
+## Installation
+
+<Tabs>
+  <Tab title="npm">
+    ```bash
+    npm install @colyseus/schema
+    ```
+  </Tab>
+  <Tab title="yarn">
+    ```bash
+    yarn add @colyseus/schema
+    ```
+  </Tab>
+  <Tab title="pnpm">
+    ```bash
+    pnpm add @colyseus/schema
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  `@colyseus/schema` is already a dependency of `@colyseus/core`. You only need to install it separately if you are generating client-side type definitions or working outside a standard Colyseus project.
+</Note>
+
+## Extending `Schema`
+
+Every synchronized state class extends the `Schema` base class:
+
+```typescript
+import { Schema, type } from "@colyseus/schema";
+
+class Player extends Schema {
+  @type("string") name: string = "";
+  @type("float32") x: number = 0;
+  @type("float32") y: number = 0;
+}
+```
+
+Instances behave like normal JavaScript objects. You read and write fields directly — no getter/setter boilerplate required.
+
+## Primitive types
+
+`@type()` accepts a string literal naming the primitive type:
+
+<AccordionGroup>
+  <Accordion title="Integer types">
+    | Type | Range | Bytes |
+    |---|---|---|
+    | `"int8"` | −128 to 127 | 1 |
+    | `"uint8"` | 0 to 255 | 1 |
+    | `"int16"` | −32 768 to 32 767 | 2 |
+    | `"uint16"` | 0 to 65 535 | 2 |
+    | `"int32"` | −2 147 483 648 to 2 147 483 647 | 4 |
+    | `"uint32"` | 0 to 4 294 967 295 | 4 |
+    | `"int64"` | −2⁶³ to 2⁶³−1 | 8 |
+    | `"uint64"` | 0 to 2⁶⁴−1 | 8 |
+
+    Use the narrowest integer type that fits your data. A health bar from 0–100 fits in `"uint8"` (1 byte) rather than the default `"number"` (8 bytes as a `float64`).
+  </Accordion>
+
+  <Accordion title="Floating-point types">
+    | Type | Precision | Bytes |
+    |---|---|---|
+    | `"float32"` | ~7 significant digits | 4 |
+    | `"float64"` | ~15 significant digits | 8 |
+    | `"number"` | Alias for `"float64"` | 8 |
+
+    Use `"float32"` for positions and velocities where sub-millimetre precision is unnecessary.
+  </Accordion>
+
+  <Accordion title="Other primitives">
+    | Type | Notes |
+    |---|---|
+    | `"string"` | UTF-8, variable length |
+    | `"boolean"` | `true` / `false`, 1 byte |
+  </Accordion>
+</AccordionGroup>
+
+## Decorator API
+
+Requires `experimentalDecorators: true` in `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "experimentalDecorators": true
+  }
+}
+```
+
+### Primitive fields
+
+```typescript
+import { Schema, type } from "@colyseus/schema";
+
+class GameState extends Schema {
+  @type("string")  roomName: string = "";
+  @type("uint32")  tick: number = 0;
+  @type("boolean") gameOver: boolean = false;
+  @type("float32") gravity: number = 9.8;
+}
+```
+
+### Nested schemas
+
+Pass the child class constructor as the type argument:
+
+```typescript
+class Vector2 extends Schema {
+  @type("float32") x: number = 0;
+  @type("float32") y: number = 0;
+}
+
+class Player extends Schema {
+  @type("string")  name: string = "";
+  @type(Vector2)   position = new Vector2();
+  @type(Vector2)   velocity = new Vector2();
+}
+```
+
+Changes to `player.position.x` are tracked automatically — the serializer walks the entire state tree.
+
+### Collection types
+
+Wrap the child type in a descriptor object:
+
+```typescript
+import { Schema, type, MapSchema, ArraySchema } from "@colyseus/schema";
+
+class GameState extends Schema {
+  // key → Player map
+  @type({ map: Player })   players = new MapSchema<Player>();
+
+  // ordered list of strings
+  @type(["string"])        chatLog = new ArraySchema<string>();
+
+  // ordered list of objects
+  @type([Player])          spectators = new ArraySchema<Player>();
+}
+```
+
+| Syntax | Collection |
+|---|---|
+| `{ map: Type }` | `MapSchema<Type>` |
+| `[Type]` or `["primitive"]` | `ArraySchema<Type>` |
+| `{ set: Type }` | `SetSchema<Type>` |
+| `{ collection: Type }` | `CollectionSchema<Type>` |
+
+## Functional API
+
+If you prefer to avoid decorators — or if your build toolchain does not support `experimentalDecorators` — use the `schema()` factory function:
+
+```typescript
+import { schema, MapSchema } from "@colyseus/schema";
+import type { SchemaType } from "@colyseus/schema";
+
+const Player = schema({
+  name:     "string",
+  x:        "float32",
+  y:        "float32",
+  score:    "uint16",
+});
+type Player = SchemaType<typeof Player>;
+
+const GameState = schema({
+  players:  { map: Player },
+  chatLog:  ["string"],
+  tick:     "uint32",
+  gameOver: "boolean",
+});
+type GameState = SchemaType<typeof GameState>;
+```
+
+The produced constructors are identical at runtime — `new GameState()` and `new Player()` work exactly the same as with decorators.
+
+<Tip>
+  `SchemaType<T>` extracts the TypeScript instance type from the schema constructor. Use it to type function parameters that receive schema instances.
+</Tip>
+
+## Optional fields
+
+Fields that are `undefined` at encoding time are skipped — they consume no bytes in the patch. To make a field explicitly optional, initialize it to `undefined`:
+
+```typescript
+class Player extends Schema {
+  @type("string")  name: string = "";
+  @type("string")  clan?: string;      // omitted from patch when undefined
+  @type("uint16")  score: number = 0;
+}
+```
+
+Assigning a previously-`undefined` field sends only that field in the next patch.
+
+## Per-client field filtering with `@filter()`
+
+The `@filter()` decorator lets you hide specific fields from certain clients. The filter callback receives the room client and must return `true` to include the field in that client's patch:
+
+```typescript
+import { Schema, type, filter } from "@colyseus/schema";
+import type { Client } from "@colyseus/core";
+
+class Player extends Schema {
+  // Each client only receives their own secret token
+  @filter(function (this: Player, client: Client, value: string, root: GameState) {
+    return root.players.get(client.sessionId) === this;
+  })
+  @type("string") secretToken: string = "";
+
+  @type("float32") x: number = 0;
+  @type("float32") y: number = 0;
+}
+```
+
+<Warning>
+  When any field uses `@filter()`, the `SchemaSerializer` must encode a separate patch per client instead of one shared patch. This increases CPU usage proportionally to the number of connected clients. Only use `@filter()` when per-client visibility is truly necessary.
+</Warning>
+
+## TypeScript generics and `InferState`
+
+Type the room's state by passing your schema class in the room options generic:
+
+```typescript
+import { Room } from "@colyseus/core";
+
+export class GameRoom extends Room<{ state: GameState }> {
+  onCreate() {
+    this.state = new GameState(); // this.state is typed as GameState
+  }
+}
+```
+
+On the client side, pass the state class to `joinOrCreate` to get a typed room:
+
+```typescript
+import { Client } from "@colyseus/sdk";
+import { GameState } from "./GameState";
+
+const client = new Client("ws://localhost:2567");
+const room = await client.joinOrCreate<GameState>("game");
+// room.state is typed as GameState
+```
+
+## Complete example
+
+```typescript
+import { Schema, type, MapSchema, ArraySchema } from "@colyseus/schema";
+
+class Vector2 extends Schema {
+  @type("float32") x: number = 0;
+  @type("float32") y: number = 0;
+}
+
+class Player extends Schema {
+  @type("string")  sessionId: string = "";
+  @type("string")  name: string = "";
+  @type(Vector2)   position = new Vector2();
+  @type("uint16")  health: number = 100;
+  @type("uint16")  score: number = 0;
+  @type("boolean") isAlive: boolean = true;
+}
+
+class GameState extends Schema {
+  @type({ map: Player }) players = new MapSchema<Player>();
+  @type(["string"])      chatLog = new ArraySchema<string>();
+  @type("uint32")        tick: number = 0;
+  @type("boolean")       gameStarted: boolean = false;
+  @type("string")        phase: string = "lobby";
+}
+```

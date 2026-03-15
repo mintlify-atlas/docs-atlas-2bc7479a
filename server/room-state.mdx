@@ -1,0 +1,226 @@
+---
+title: "Room State"
+description: "State synchronization in Colyseus: setting state, patch rate, broadcastPatch, Schema vs raw objects, and client-side callbacks."
+---
+
+Colyseus automatically synchronizes room state with all connected clients at a configurable rate. Clients receive the full state on join and incremental diffs (patches) as the state changes.
+
+## Setting the room state
+
+Assign a state object to `this.state` inside `onCreate()`:
+
+```typescript
+import { Room } from "@colyseus/core";
+import { GameState } from "./GameState";
+
+class GameRoom extends Room<{ state: GameState }> {
+  onCreate() {
+    this.state = new GameState();
+  }
+}
+```
+
+<Note>
+  `this.setState(state)` is the deprecated equivalent. Assign `this.state`
+  directly instead.
+</Note>
+
+Once `this.state` is set, Colyseus sends the full state to each new client when they join and broadcasts incremental diffs at the configured `patchRate`.
+
+---
+
+## Schema vs raw objects
+
+<Tabs>
+  <Tab title="@colyseus/schema (recommended)">
+    When you assign a `@colyseus/schema` instance, Colyseus uses `SchemaSerializer`,
+    which tracks mutations and sends binary-encoded diffs. Clients receive only the
+    changed fields on each patch tick.
+
+    ```typescript
+    import { Schema, type, MapSchema } from "@colyseus/schema";
+
+    class Player extends Schema {
+      @type("string") name: string;
+      @type("number") x: number = 0;
+      @type("number") y: number = 0;
+    }
+
+    class GameState extends Schema {
+      @type({ map: Player }) players = new MapSchema<Player>();
+      @type("number") tick: number = 0;
+    }
+    ```
+
+    Schema benefits:
+    - Binary delta encoding — only mutated fields are sent
+    - Auto-generated client-side types for TypeScript/C#/Lua/Haxe
+    - Deep change tracking inside `MapSchema`, `ArraySchema`, etc.
+  </Tab>
+  <Tab title="Raw JavaScript object">
+    If you assign a plain object (without `@colyseus/schema` metadata), Colyseus
+    uses `NoneSerializer`. The full state is JSON-serialized and sent to every
+    client on every patch tick — there is no diff encoding.
+
+    ```typescript
+    class SimpleRoom extends Room {
+      onCreate() {
+        // Full state sent every tick — no diff encoding
+        this.state = { players: {}, tick: 0 };
+      }
+    }
+    ```
+
+    Use raw objects for prototyping or very small states where diff overhead doesn't matter.
+  </Tab>
+</Tabs>
+
+---
+
+## patchRate
+
+```typescript
+public patchRate: number | null  // default: 50ms (20fps)
+```
+
+Controls how often Colyseus calls `broadcastPatch()` automatically. The value is in milliseconds.
+
+```typescript
+onCreate() {
+  this.state = new GameState();
+
+  // 20fps (default)
+  this.patchRate = 1000 / 20;   // 50ms
+
+  // 60fps
+  this.patchRate = 1000 / 60;   // ~16.6ms
+
+  // Disable automatic patching
+  this.patchRate = null;
+}
+```
+
+<Note>
+  When `patchRate` is set to `null` or `0` and no simulation interval is active,
+  Colyseus still ticks the internal clock at 60fps to keep `clock`-based timers
+  working correctly.
+</Note>
+
+### Choosing a patch rate
+
+| Use case | Recommended rate |
+|---|---|
+| Turn-based games | `1000` (1fps) or on-demand with `broadcastPatch()` |
+| Strategy / RTS | `100`–`200` (5–10fps) |
+| Action / real-time | `50` (20fps, default) |
+| Physics-heavy | `1000 / 60` (~16.6ms, 60fps) |
+
+---
+
+## broadcastPatch()
+
+```typescript
+public broadcastPatch(): boolean
+```
+
+Manually serialize the current state and send diffs to all clients. Returns `true` if the state had changes.
+
+Also calls `onBeforePatch(state)` if defined, and flushes any messages queued with `{ afterNextPatch: true }`.
+
+```typescript
+onCreate() {
+  this.state = new GameState();
+  this.patchRate = null; // disable automatic patching
+
+  this.onMessage("submit_turn", (client, turn) => {
+    this.applyTurn(turn);
+    this.broadcastPatch(); // patch manually after each turn
+  });
+}
+```
+
+---
+
+## onBeforePatch(state)
+
+```typescript
+public onBeforePatch?(state: ExtractRoomState<T>): void | Promise<any>
+```
+
+Called before each patch broadcast. Use it to update computed/derived state that must be synchronized but is too expensive to maintain incrementally:
+
+```typescript
+onBeforePatch(state: GameState) {
+  // Recompute leaderboard before each patch
+  state.leaderboard = [...state.players.values()]
+    .sort((a, b) => b.score - a.score)
+    .map((p) => p.name);
+}
+```
+
+---
+
+## Client-side state callbacks
+
+When using `@colyseus/schema`, the client SDK triggers callbacks whenever state changes are applied. These fire automatically after each patch is received:
+
+```typescript
+// TypeScript client example
+room.state.players.onAdd((player, sessionId) => {
+  console.log("Player added:", sessionId);
+  scene.addPlayerSprite(sessionId, player);
+
+  // listen for mutations on this specific player
+  player.onChange(() => {
+    scene.updatePlayerPosition(sessionId, player.x, player.y);
+  });
+});
+
+room.state.players.onRemove((player, sessionId) => {
+  scene.removePlayerSprite(sessionId);
+});
+
+room.state.onChange(() => {
+  // called whenever any part of state changes
+  ui.updateTick(room.state.tick);
+});
+```
+
+---
+
+## Full state on join
+
+When a new client joins, Colyseus automatically sends them the full current state before any patch diffs. This happens during the internal handshake — you do not need to manually send state in `onJoin()`.
+
+---
+
+## devMode: state persistence on restart
+
+With `devMode: true` on the server, room state is serialized to disk on graceful shutdown and deserialized on the next start. Override `onCacheRoom()` and `onRestoreRoom()` to customize what is saved:
+
+```typescript
+onCacheRoom() {
+  return {
+    players: [...this.state.players.entries()].map(([id, p]) => ({
+      id,
+      name: p.name,
+      score: p.score,
+    })),
+  };
+}
+
+onRestoreRoom(cached: any) {
+  for (const { id, name, score } of cached.players) {
+    const player = new Player();
+    player.name = name;
+    player.score = score;
+    this.state.players.set(id, player);
+  }
+}
+```
+
+<Warning>
+  After restoring, clients reconnect with the same `sessionId`. If your Schema
+  structure changed between restarts, clients may see "schema mismatch" errors.
+  Only use `devMode` during development.
+</Warning>

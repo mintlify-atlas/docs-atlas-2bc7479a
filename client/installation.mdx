@@ -1,0 +1,82 @@
+---
+title: "Installation"
+description: "Install @colyseus/sdk in your JavaScript or TypeScript project."
+---
+
+## Package managers
+
+Install `@colyseus/sdk` with your preferred package manager:
+
+<CodeGroup>
+
+```bash npm
+npm install @colyseus/sdk
+```
+
+```bash yarn
+yarn add @colyseus/sdk
+```
+
+```bash pnpm
+pnpm add @colyseus/sdk
+```
+
+</CodeGroup>
+
+The current release is **0.17.x**. Make sure the SDK version matches the `@colyseus/core` version you are running on the server.
+
+<Note>
+If you are running the server and client from the same repository, the `@colyseus/core` peer dependency is resolved automatically from your workspace. The package declares it as an optional peer dependency so standalone client projects do not need to install it.
+</Note>
+
+## TypeScript setup
+
+The package ships with declarations at `build/index.d.ts`. Add the following to your `tsconfig.json` if you are targeting the browser:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2019", "DOM"]
+  }
+}
+```
+
+<Tip>
+The SDK is written as native ES modules. If you are using a bundler such as Vite, Webpack, or Rollup, no extra configuration is needed — tree-shaking works out of the box.
+</Tip>
+
+## CDN usage
+
+For quick prototypes or plain HTML pages, load the pre-built browser bundle from a CDN:
+
+```html
+<!-- jsDelivr -->
+<script src="https://cdn.jsdelivr.net/npm/@colyseus/sdk@0.17/dist/colyseus.js"></script>
+
+<!-- unpkg -->
+<script src="https://unpkg.com/@colyseus/sdk@0.17/dist/colyseus.js"></script>
+```
+
+After the script tag loads, the SDK is available as the global `Colyseus` object:
+
+```html
+<script>
+  const client = new Colyseus.Client("ws://localhost:2567");
+</script>
+```
+
+## Verifying the installation
+
+Create a small test file to confirm the SDK resolves correctly:
+
+```typescript
+import { Client } from "@colyseus/sdk";
+
+const client = new Client("ws://localhost:2567");
+console.log("SDK version:", Client.VERSION); // "0.17"
+```
+
+Run it with `ts-node index.ts` or `node --loader ts-node/esm index.ts`, or import it in your bundler entry point.

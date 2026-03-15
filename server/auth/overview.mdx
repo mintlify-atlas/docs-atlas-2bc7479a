@@ -1,0 +1,193 @@
+---
+title: "Auth overview"
+description: "Add email and password authentication to your Colyseus server with @colyseus/auth."
+---
+
+`@colyseus/auth` provides a ready-made authentication system for Colyseus servers. It exposes
+Express routes for registration, login, anonymous sign-in, password reset, and OAuth. Tokens are
+signed with JWT and verified automatically in room `onAuth()` handlers via middleware.
+
+<Note>
+  The `@colyseus/auth` API is in beta. Breaking changes may occur between minor versions.
+</Note>
+
+## Installation
+
+```bash
+npm install @colyseus/auth
+```
+
+Set the `JWT_SECRET` environment variable before starting the server. This secret is used to sign
+and verify all tokens:
+
+```bash
+JWT_SECRET=your-very-long-random-secret
+```
+
+## Setup
+
+<Steps>
+  <Step title="Import auth and mount the routes">
+    ```typescript
+    import { listen } from "@colyseus/tools";
+    import { auth } from "@colyseus/auth";
+    import { defineRoom } from "@colyseus/core";
+    import { GameRoom } from "./rooms/GameRoom";
+
+    listen({
+      rooms: { game: defineRoom(GameRoom) },
+      initializeExpress: (app) => {
+        app.use(auth.prefix, auth.routes({
+          onFindUserByEmail: async (email) => {
+            return db.users.findOne({ email });
+          },
+          onRegisterWithEmailAndPassword: async (email, password, options) => {
+            return db.users.create({ email, password });
+          },
+        }));
+      },
+    });
+    ```
+
+    By default, routes are mounted at `/auth`. You can change this by setting `auth.prefix`.
+  </Step>
+  <Step title="Protect rooms with onAuth()">
+    ```typescript
+    import { Room } from "@colyseus/core";
+    import { JWT } from "@colyseus/auth";
+
+    export class GameRoom extends Room {
+      static async onAuth(token: string) {
+        // Verify the JWT and return the user payload.
+        // The returned value is available as `client.auth` inside the room.
+        return await JWT.verify(token);
+      }
+
+      onJoin(client, options) {
+        console.log(client.auth.email, "joined");
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## HTTP routes
+
+After calling `auth.routes()`, the following endpoints are available:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/auth/register` | Register with email and password |
+| `POST` | `/auth/login` | Login with email and password |
+| `POST` | `/auth/anonymous` | Sign in anonymously |
+| `GET` | `/auth/userdata` | Return user data from the current token |
+| `POST` | `/auth/forgot-password` | Send a password reset email |
+| `GET/POST` | `/auth/reset-password` | Password reset form and action |
+| `GET` | `/auth/confirm-email` | Email confirmation link handler |
+
+## `AuthSettings` reference
+
+Pass any of these callbacks to `auth.routes()` to integrate with your database:
+
+<ParamField path="onFindUserByEmail" type="(email: string) => Promise<{ password: string }>">  
+  Required. Look up a user record by email. The returned object must include `password` (the hashed
+  value) so the login handler can verify the credentials.
+</ParamField>
+
+<ParamField path="onRegisterWithEmailAndPassword" type="(email: string, password: string, options: any) => Promise<unknown>">
+  Required. Create a new user record. `password` is already hashed when this callback is called.
+  `options` may contain an `upgradingToken` field when an anonymous user is converting to a full
+  account.
+</ParamField>
+
+<ParamField path="onRegisterAnonymously" type="(options: any) => Promise<unknown>">
+  Optional. Create an anonymous user record. If not provided, a minimal anonymous payload with a
+  generated `anonymousId` is used.
+</ParamField>
+
+<ParamField path="onParseToken" type="(token: JwtPayload) => Promise<unknown> | unknown">
+  Optional. Transform the decoded JWT payload before it is returned from `/auth/userdata`. Defaults
+  to returning the raw payload.
+</ParamField>
+
+<ParamField path="onGenerateToken" type="(userdata: unknown) => Promise<unknown>">
+  Optional. Generate a token from user data. Defaults to `JWT.sign(userdata)`.
+</ParamField>
+
+<ParamField path="onHashPassword" type="(password: string) => Promise<string>">
+  Optional. Hash a plain-text password before storing it. Defaults to `SHA1 + AUTH_SALT`.
+</ParamField>
+
+<ParamField path="onSendEmailConfirmation" type="(email: string, html: string, confirmLink: string) => Promise<unknown>">
+  Optional. Send a confirmation email after registration. If provided, the user receives an email
+  with a link to `/auth/confirm-email`.
+</ParamField>
+
+<ParamField path="onEmailConfirmed" type="(email: string) => Promise<unknown>">
+  Optional. Called after a user confirms their email address.
+</ParamField>
+
+<ParamField path="onForgotPassword" type="(email: string, html: string, resetLink: string) => Promise<unknown>">
+  Optional. Send a password reset email. The reset link is valid for 30 minutes.
+</ParamField>
+
+<ParamField path="onResetPassword" type="(email: string, password: string) => Promise<unknown>">
+  Optional. Update the user's password. Called after the reset form is submitted.
+</ParamField>
+
+<ParamField path="onOAuthProviderCallback" type="OAuthProviderCallback">
+  Optional. Handle successful OAuth logins. See the [OAuth guide](/server/auth/oauth).
+</ParamField>
+
+## Middleware
+
+`auth.middleware()` verifies a Bearer token in the `Authorization` header. Use it to protect
+custom HTTP routes:
+
+```typescript
+app.get("/protected", auth.middleware(), (req, res) => {
+  // req.auth contains the decoded JWT payload
+  res.json({ userId: req.auth.id });
+});
+```
+
+The same middleware works with the `better-call` framework:
+
+```typescript
+const protectedEndpoint = createEndpoint("/protected", {
+  method: "GET",
+  use: [auth.middleware()],
+}, async (ctx) => {
+  // ctx.context.auth contains the decoded JWT payload
+});
+```
+
+## Upgrading anonymous users
+
+When a user registers after signing in anonymously, pass the anonymous JWT in the `Authorization`
+header of the `POST /auth/register` request. The `options.upgradingToken` field in
+`onRegisterWithEmailAndPassword` will contain the decoded anonymous token, so you can migrate their
+data.
+
+```typescript
+// Client side: upgrade anonymous user
+await fetch("/auth/register", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${anonymousToken}`,
+  },
+  body: JSON.stringify({ email, password }),
+});
+```
+
+```typescript
+// Server side: migrate anonymous data
+onRegisterWithEmailAndPassword: async (email, password, options) => {
+  const anonymousUser = options.upgradingToken
+    ? await db.users.findOne({ anonymousId: options.upgradingToken.anonymousId })
+    : null;
+
+  return db.users.create({ email, password, previousAnonymousId: anonymousUser?.id });
+},
+```

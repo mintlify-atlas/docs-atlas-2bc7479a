@@ -1,0 +1,139 @@
+---
+title: "GameMaker"
+description: "Install and use the Colyseus GameMaker SDK to connect your GameMaker Studio 2 game to a Colyseus server."
+---
+
+## Installation
+
+<Steps>
+  <Step title="Download the GameMaker SDK">
+    Download the latest GameMaker SDK release from GitHub:
+
+    [Browse GameMaker SDK releases](https://github.com/colyseus/native-sdk/releases?q=gamemaker+sdk&expanded=true)
+
+    Download the `.yymps` local package file.
+  </Step>
+
+  <Step title="Import the local package">
+    In GameMaker Studio 2, go to **Tools → Import Local Package** and select the downloaded `.yymps` file. Import all resources.
+  </Step>
+
+  <Step title="Add the Colyseus extension to your project">
+    After importing, the `Colyseus` scripts and objects are available in your Asset Browser under the imported group.
+  </Step>
+</Steps>
+
+## Connecting to a room
+
+Use the `colyseus_client_create` and `colyseus_join_or_create` functions inside your Game Object's Create and Step events:
+
+```gml
+// Create event
+global.client = colyseus_client_create("ws://localhost:2567");
+global.room = undefined;
+
+// Async - Networking event
+colyseus_join_or_create(global.client, "game", { map: "forest" }, function(room, error) {
+    if (error != undefined) {
+        show_debug_message("Error joining room: " + string(error));
+        exit;
+    }
+    global.room = room;
+    show_debug_message("Joined room: " + colyseus_room_get_id(global.room));
+    show_debug_message("Session ID: " + colyseus_room_get_session_id(global.room));
+});
+```
+
+## Sending and receiving messages
+
+```gml
+// Send a message to the server
+colyseus_room_send(global.room, "move", { direction: "up" });
+
+// Listen for a specific message from the server
+colyseus_room_on_message(global.room, "chat", function(payload) {
+    show_debug_message("Chat: " + payload.text);
+});
+
+// Listen for all messages
+colyseus_room_on_message(global.room, "*", function(type, payload) {
+    show_debug_message("Message type: " + string(type));
+});
+```
+
+## Listening to room events
+
+```gml
+// State change
+colyseus_room_on_state_change(global.room, function(state) {
+    render_game_state(state);
+});
+
+// Error
+colyseus_room_on_error(global.room, function(code, message) {
+    show_debug_message("Room error " + string(code) + ": " + message);
+});
+
+// Leave
+colyseus_room_on_leave(global.room, function(code) {
+    show_debug_message("Left room: " + string(code));
+});
+```
+
+## State synchronization
+
+The GameMaker SDK deserializes the server's binary-encoded schema state into GML-accessible structs. Generate state accessors from your server schema:
+
+```bash
+npx @colyseus/schema-codegen path/to/MyState.ts --output ./scripts --language gml
+```
+
+Access state fields via the generated helper functions or directly from the state struct:
+
+```gml
+// Access a player's position from state
+var players = colyseus_state_get(global.room, "players");
+var player = ds_map_find_value(players, session_id);
+var x = player.position.x;
+var y = player.position.y;
+```
+
+Listen for collection changes:
+
+```gml
+colyseus_state_on_add(global.room, "players", function(player, session_id) {
+    show_debug_message("Player added: " + session_id);
+    spawn_player_object(session_id, player);
+});
+
+colyseus_state_on_remove(global.room, "players", function(player, session_id) {
+    remove_player_object(session_id);
+});
+```
+
+## Leaving a room
+
+```gml
+colyseus_room_leave(global.room);
+```
+
+<Note>
+Call `colyseus_room_leave` in your Game Object's Destroy or Room End event to ensure a clean disconnect.
+</Note>
+
+## Reconnection
+
+```gml
+var token = colyseus_room_get_reconnection_token(global.room);
+
+// Store token in a persistent data structure, then later:
+colyseus_reconnect(global.client, token, function(room, error) {
+    if (error == undefined) {
+        global.room = room;
+    }
+});
+```
+
+<Tip>
+The GameMaker SDK source and the Tank Battle demo are available at [github.com/colyseus/native-sdk](https://github.com/colyseus/native-sdk).
+</Tip>

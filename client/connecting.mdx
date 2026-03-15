@@ -1,0 +1,207 @@
+---
+title: "Creating a client and connecting"
+description: "Construct a ColyseusSDK client, configure endpoints, and join rooms using joinOrCreate, join, create, joinById, and reconnect."
+---
+
+## Creating a client
+
+The `ColyseusSDK` class (also exported as `Client`) is the entry point for all server communication. Pass either a WebSocket URL string or an `EndpointSettings` object:
+
+```typescript
+import { Client } from "@colyseus/sdk";
+
+// String endpoint
+const client = new Client("ws://localhost:2567");
+
+// Secure WebSocket
+const client = new Client("wss://my-game.example.com");
+
+// With a path prefix
+const client = new Client("wss://my-game.example.com/colyseus");
+```
+
+When running in a browser, the default endpoint is derived from `window.location` automatically, so you can omit the argument entirely during development:
+
+```typescript
+const client = new Client(); // defaults to ws://127.0.0.1:2567 in non-browser environments
+```
+
+### EndpointSettings
+
+For programmatic control, pass an `EndpointSettings` object instead of a URL string:
+
+<ParamField path="hostname" type="string" required>
+  The server hostname, for example `"my-game.example.com"` or `"127.0.0.1"`.
+</ParamField>
+
+<ParamField path="secure" type="boolean" required>
+  Set to `true` to use `wss://` (WebSocket Secure) and `https://` for HTTP requests.
+</ParamField>
+
+<ParamField path="port" type="number">
+  The port number. Defaults to `443` when `secure` is `true`, `80` otherwise.
+</ParamField>
+
+<ParamField path="pathname" type="string">
+  A path prefix appended to all URLs, for example `"/colyseus"`. Trailing slashes are stripped automatically.
+</ParamField>
+
+<ParamField path="searchParams" type="string">
+  Extra query string parameters appended to every connection URL.
+</ParamField>
+
+<ParamField path="protocol" type='"ws" | "h3"'>
+  Transport protocol. Use `"h3"` for WebTransport (experimental). Defaults to `"ws"`.
+</ParamField>
+
+```typescript
+const client = new Client({
+  hostname: "my-game.example.com",
+  secure: true,
+  port: 443,
+  pathname: "/colyseus",
+});
+```
+
+### ClientOptions
+
+<ParamField path="headers" type="object">
+  Additional HTTP headers sent with every matchmaking and auth request. Useful for API keys or custom tokens.
+</ParamField>
+
+<ParamField path="protocol" type='"ws" | "h3"'>
+  Override the transport protocol for room connections.
+</ParamField>
+
+<ParamField path="urlBuilder" type="(url: URL) => string">
+  A custom function that rewrites the final connection URL. Applied automatically when a Discord Embedded SDK host (`discordsays.com`) is detected.
+</ParamField>
+
+## Selecting the lowest-latency endpoint
+
+If you operate servers in multiple regions, `ColyseusSDK.selectByLatency()` pings all endpoints and returns a client configured for the fastest one:
+
+```typescript
+const client = await ColyseusSDK.selectByLatency([
+  "wss://us-east.example.com",
+  "wss://eu-west.example.com",
+  "wss://ap-south.example.com",
+]);
+
+// client is now connected to the lowest-latency endpoint
+const room = await client.joinOrCreate("game");
+```
+
+## Joining rooms
+
+### joinOrCreate
+
+Attempts to join an existing room with available seats. If no matching room exists, creates a new one.
+
+```typescript
+const room = await client.joinOrCreate("game", { map: "forest" });
+```
+
+<ParamField path="roomName" type="string" required>
+  The room identifier registered on the server with `server.define()`.
+</ParamField>
+
+<ParamField path="options" type="object">
+  Arbitrary join options forwarded to the server's `onJoin` handler.
+</ParamField>
+
+### join
+
+Joins an existing room. Throws `MatchMakeError` if no available room is found.
+
+```typescript
+const room = await client.join("game", { map: "forest" });
+```
+
+### create
+
+Always creates a new room, even if one already exists.
+
+```typescript
+const room = await client.create("game", { private: true });
+```
+
+### joinById
+
+Joins a specific room by its unique `roomId`.
+
+```typescript
+const room = await client.joinById("aBcD12345");
+```
+
+<ParamField path="roomId" type="string" required>
+  The nine-character room ID, available from `room.roomId` on a previously joined room.
+</ParamField>
+
+### reconnect
+
+Re-establishes a connection to a room after a disconnect, using the token stored on the previous `Room` instance.
+
+```typescript
+// Store token before leaving
+const token = room.reconnectionToken;
+
+// Later: reconnect
+const room = await client.reconnect(token);
+```
+
+<ParamField path="reconnectionToken" type="string" required>
+  The value of `room.reconnectionToken` from a previously connected room. The format is `"roomId:token"`.
+</ParamField>
+
+<Note>
+Automatic reconnection is built into the `Room` class and retries up to 15 times with exponential backoff. You only need to call `client.reconnect()` manually when restoring a session across page reloads or app restarts.
+</Note>
+
+## TypeScript inference
+
+All join methods support generics. When you pass your server's `SDKTypes` as the `ColyseusSDK` type parameter, TypeScript infers the correct state type and join options per room name:
+
+```typescript
+import { ColyseusSDK } from "@colyseus/sdk";
+import type { AppTypes } from "./server/app.config"; // from your server project
+
+const client = new ColyseusSDK<AppTypes>("ws://localhost:2567");
+
+// TypeScript knows the options and state type for "battle_room"
+const room = await client.joinOrCreate("battle_room", { skill: 1200 });
+//                                                      ^^^^^^^^^^^^
+//                                     type-checked against onJoin options
+```
+
+## Error handling
+
+Matchmaking methods throw two error types:
+
+**`MatchMakeError`** — thrown when the server rejects the matchmaking request (room full, options invalid, etc.).
+
+```typescript
+import { MatchMakeError } from "@colyseus/sdk";
+
+try {
+  const room = await client.joinOrCreate("game");
+} catch (e) {
+  if (e instanceof MatchMakeError) {
+    console.error("Matchmaking failed:", e.message, "code:", e.code);
+  }
+}
+```
+
+**`ServerError`** — thrown for HTTP-level failures (network errors, 4xx/5xx responses).
+
+```typescript
+import { ServerError } from "@colyseus/sdk";
+
+try {
+  const room = await client.joinOrCreate("game");
+} catch (e) {
+  if (e instanceof ServerError) {
+    console.error("HTTP error:", e.status, e.message);
+  }
+}
+```

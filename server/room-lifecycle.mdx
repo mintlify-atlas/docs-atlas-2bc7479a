@@ -1,0 +1,412 @@
+---
+title: "Room Lifecycle"
+description: "Detailed documentation for each Room lifecycle method: onCreate, onAuth, onJoin, onLeave, onDrop, onReconnect, onDispose, and exception handling."
+---
+
+Colyseus calls lifecycle methods in a specific order as clients interact with the room. All lifecycle methods are optional.
+
+```
+client joins
+     │
+     ├──► onCreate()  (only for the first client, when the room is created)
+     │
+     ├──► onAuth()    (for every client)
+     │
+     ├──► onJoin()    (after auth passes)
+     │
+     │   ... room is active ...
+     │
+     ├──► onLeave() / onDrop()   (client leaves or drops)
+     │
+     └──► onDispose()             (when last client leaves and autoDispose=true)
+```
+
+---
+
+## onCreate(options)
+
+```typescript
+public onCreate?(options: any): void | Promise<any>
+```
+
+Called once when the room is created by the matchmaker. Use it to:
+- Initialize and set the room's state
+- Register message handlers
+- Set the simulation interval
+- Configure room properties like `maxClients` or `patchRate`
+
+```typescript
+import { Room } from "@colyseus/core";
+import { GameState } from "./GameState";
+
+class GameRoom extends Room<{ state: GameState }> {
+  async onCreate(options: { map: string; maxPlayers: number }) {
+    // Set up state
+    this.state = new GameState();
+    this.state.map = options.map;
+
+    // Configure room
+    this.maxClients = options.maxPlayers ?? 4;
+    this.patchRate = 1000 / 20; // 20fps
+
+    // Connect to external services
+    await this.state.loadMap(options.map);
+
+    // Register message handlers
+    this.onMessage("move", (client, data) => {
+      const player = this.state.players.get(client.sessionId);
+      player.x = data.x;
+      player.y = data.y;
+    });
+
+    // Game loop
+    this.setSimulationInterval((dt) => this.update(dt), 1000 / 60);
+  }
+}
+```
+
+The `options` argument contains the options passed by the first client that triggered room creation, merged with any `defaultOptions` you registered with `defineRoom()`.
+
+<Note>
+  You cannot call `this.disconnect()` inside `onCreate()`. The room is still
+  being initialized at this point.
+</Note>
+
+---
+
+## onAuth(client, options, context)
+
+```typescript
+public onAuth(
+  client: Client,
+  options: any,
+  context: AuthContext
+): any | Promise<any>
+```
+
+Called before `onJoin()` for every joining client. Use it to authenticate the client and return user data. The returned value is stored on `client.auth`.
+
+```typescript
+interface AuthContext {
+  token: string;    // bearer token from the client (Authorization header)
+  headers: Headers; // all HTTP headers from the upgrade request
+  ip: string;       // client IP address
+}
+```
+
+**Returning a truthy value** allows the client to join. The returned value is available as `client.auth` in subsequent lifecycle methods:
+
+```typescript
+async onAuth(client: Client, options: any, context: AuthContext) {
+  // verify JWT token
+  const payload = await verifyJWT(context.token);
+
+  if (!payload) {
+    throw new Error("Unauthorized");
+  }
+
+  // returned value is available as client.auth
+  return {
+    userId: payload.sub,
+    username: payload.name,
+    role: payload.role,
+  };
+}
+
+onJoin(client: Client) {
+  console.log(client.auth.username, "joined");
+}
+```
+
+**Throwing an error** rejects the client. Use `ServerError` for custom status codes:
+
+```typescript
+import { ServerError } from "@colyseus/core";
+
+async onAuth(client: Client, options: any, context: AuthContext) {
+  const user = await db.users.findByToken(context.token);
+
+  if (!user) {
+    throw new ServerError(401, "Invalid token");
+  }
+
+  if (user.isBanned) {
+    throw new ServerError(403, "You are banned");
+  }
+
+  return user;
+}
+```
+
+**Default behavior**: `onAuth` returns `true`, allowing all clients.
+
+### Static onAuth
+
+Colyseus also supports a static `onAuth` method for early authentication before any room is created:
+
+```typescript
+class GameRoom extends Room {
+  static async onAuth(token: string, options: any, context: AuthContext) {
+    return await verifyJWT(token);
+  }
+}
+```
+
+<Note>
+  The static `onAuth` is called during the matchmaking phase, before the room
+  instance exists. Its return value is cached and passed to instance lifecycle
+  methods.
+</Note>
+
+---
+
+## onJoin(client, options, auth)
+
+```typescript
+public onJoin?(client: Client, options?: any, auth?: any): void | Promise<any>
+```
+
+Called after `onAuth()` passes. Use it to add the client's player entity to the state.
+
+```typescript
+onJoin(client: Client, options: { name: string }) {
+  const player = new Player();
+  player.name = options.name || "Guest";
+  player.sessionId = client.sessionId;
+  this.state.players.set(client.sessionId, player);
+
+  this.broadcast("player_joined", { name: player.name }, { except: client });
+}
+```
+
+If `onJoin()` throws or is async and rejects, `onLeave()` is called immediately and the client is disconnected.
+
+<Note>
+  The `auth` third argument is deprecated. Access `client.auth` directly instead.
+</Note>
+
+---
+
+## onLeave(client, code) and onDrop(client, code)
+
+```typescript
+public onLeave?(client: Client, code?: number): void | Promise<any>
+public onDrop?(client: Client, code?: number): void | Promise<any>
+```
+
+Colyseus distinguishes between two leave scenarios:
+
+| Method | When called |
+|---|---|
+| `onLeave` | Client explicitly disconnected (`client.leave()`, browser tab closed, `code === CloseCode.CONSENTED`) |
+| `onDrop` | Client was dropped due to network error, timeout, or server kick |
+
+If only `onLeave` is defined, it is called for both cases. If both are defined, `onDrop` is called for unexpected disconnections and then `onLeave` is called afterward.
+
+```typescript
+async onLeave(client: Client, code: number) {
+  const player = this.state.players.get(client.sessionId);
+  player.connected = false;
+  this.broadcast("player_left", { name: player.name });
+  this.state.players.delete(client.sessionId);
+}
+```
+
+### Reconnection handling
+
+Call `allowReconnection()` inside `onLeave()` or `onDrop()` to hold the seat:
+
+```typescript
+async onLeave(client: Client, code: number) {
+  const player = this.state.players.get(client.sessionId);
+  player.connected = false;
+
+  try {
+    // Wait up to 30 seconds for the client to reconnect
+    if (code !== CloseCode.CONSENTED) {
+      await this.allowReconnection(client, 30);
+      player.connected = true;
+    }
+  } catch (e) {
+    // Reconnection timed out
+    this.state.players.delete(client.sessionId);
+  }
+}
+```
+
+---
+
+## onReconnect(client)
+
+```typescript
+public onReconnect?(client: Client): void | Promise<any>
+```
+
+Called when a client successfully reconnects after `allowReconnection()` was called. The new `client` instance has the same `sessionId` and `auth` data as the original.
+
+```typescript
+onReconnect(client: Client) {
+  const player = this.state.players.get(client.sessionId);
+  player.connected = true;
+  client.send("game_state", { /* snapshot for fast re-sync */ });
+}
+```
+
+You can deny the reconnection by throwing inside `onReconnect()`:
+
+```typescript
+async onReconnect(client: Client) {
+  const session = await db.sessions.get(client.sessionId);
+  if (session.expired) {
+    throw new Error("Session expired");
+  }
+}
+```
+
+---
+
+## onDispose()
+
+```typescript
+public onDispose?(): void | Promise<any>
+```
+
+Called when the room is about to be removed from memory. Use it to release resources: close database connections, cancel subscriptions, flush pending writes.
+
+```typescript
+async onDispose() {
+  await this.presence.unsubscribe(this.roomId);
+  await db.saveRoomResult(this.roomId, this.state.score);
+}
+```
+
+After `onDispose()` returns, Colyseus:
+- Clears all `clock` timers
+- Stops the patch interval and simulation interval
+- Removes the room listing from the driver
+
+---
+
+## onBeforePatch(state)
+
+```typescript
+public onBeforePatch?(state: ExtractRoomState<T>): void | Promise<any>
+```
+
+Called immediately before each state patch is broadcast to clients. Use it to compute derived state values that should be up-to-date before clients receive the snapshot.
+
+---
+
+## onBeforeShutdown()
+
+```typescript
+public onBeforeShutdown(): void
+```
+
+Called during graceful server shutdown. The default implementation disconnects all clients with `SERVER_SHUTDOWN` close code (or `MAY_TRY_RECONNECT` in `devMode`). Override to customize shutdown behavior.
+
+---
+
+## devMode: onCacheRoom / onRestoreRoom
+
+When `devMode` is enabled on the server, Colyseus serializes rooms before shutdown and restores them on the next start.
+
+```typescript
+onCacheRoom(): any {
+  // return whatever you want persisted across restarts
+  return {
+    scores: Object.fromEntries(this.state.scores),
+    round: this.currentRound,
+  };
+}
+
+onRestoreRoom(cached: any): void {
+  this.currentRound = cached.round;
+  for (const [id, score] of Object.entries(cached.scores)) {
+    this.state.scores.set(id, score as number);
+  }
+}
+```
+
+---
+
+## Exception handling with onUncaughtException
+
+If you define `onUncaughtException`, Colyseus wraps all lifecycle methods in `try/catch` and forwards any thrown errors here instead of crashing or silently swallowing them.
+
+```typescript
+import {
+  OnCreateException,
+  OnAuthException,
+  OnJoinException,
+  OnLeaveException,
+  OnDropException,
+  OnReconnectException,
+  OnDisposeException,
+  OnMessageException,
+  SimulationIntervalException,
+  TimedEventException,
+  type RoomException,
+  type RoomMethodName,
+} from "@colyseus/core";
+
+class MyRoom extends Room {
+  onUncaughtException(error: RoomException, methodName: RoomMethodName) {
+    console.error(`[${methodName}] error:`, error.cause?.message ?? error.message);
+
+    if (error instanceof OnMessageException) {
+      // error.client, error.type, error.payload available
+      error.client.send("error", { message: "Invalid message" });
+    }
+
+    if (error instanceof OnJoinException) {
+      // error.client, error.options, error.auth available
+    }
+
+    // Do not re-throw. The framework handles the error lifecycle.
+  }
+}
+```
+
+### Exception classes reference
+
+<Accordion title="OnCreateException">
+  Thrown when `onCreate()` throws. Has an `options` property containing the onCreate options.
+</Accordion>
+
+<Accordion title="OnAuthException">
+  Thrown when `onAuth()` throws. Has `client` and `options` properties.
+</Accordion>
+
+<Accordion title="OnJoinException">
+  Thrown when `onJoin()` throws. Has `client`, `options`, and `auth` properties.
+</Accordion>
+
+<Accordion title="OnLeaveException">
+  Thrown when `onLeave()` throws. Has `client` and `consented` (the close code) properties.
+</Accordion>
+
+<Accordion title="OnDropException">
+  Thrown when `onDrop()` throws. Has `client` and `code` properties.
+</Accordion>
+
+<Accordion title="OnReconnectException">
+  Thrown when `onReconnect()` throws. Has a `client` property.
+</Accordion>
+
+<Accordion title="OnDisposeException">
+  Thrown when `onDispose()` throws. No extra properties.
+</Accordion>
+
+<Accordion title="OnMessageException">
+  Thrown when a message handler throws. Has `client`, `type`, and `payload` properties.
+  Use `error.isType('my_type')` to narrow the message type.
+</Accordion>
+
+<Accordion title="SimulationIntervalException">
+  Thrown when the `setSimulationInterval` callback throws.
+</Accordion>
+
+<Accordion title="TimedEventException">
+  Thrown when a `clock.setTimeout` or `clock.setInterval` callback throws. Has an `args` property.
+</Accordion>

@@ -1,0 +1,190 @@
+---
+title: "OAuth"
+description: "Add social login to your Colyseus server with the oauth module from @colyseus/auth."
+---
+
+The `oauth` module in `@colyseus/auth` integrates with the [grant](https://github.com/simov/grant)
+library to provide OAuth 2.0 and OpenID Connect flows for over 180 providers, including GitHub,
+Google, Discord, Facebook, Twitter, and more.
+
+## How it works
+
+1. The client opens `GET /auth/provider/<providerId>` in a popup window.
+2. Grant redirects the user to the provider's authorization page.
+3. After the user authorizes, the provider redirects back to `/auth/provider/<providerId>/callback`.
+4. Colyseus calls your `onOAuthProviderCallback` with the provider response and profile data.
+5. You create or update a user record and return the user object.
+6. Colyseus signs a JWT and posts it back to the opener window via `window.postMessage`.
+
+## Setup
+
+<Steps>
+  <Step title="Set required environment variables">
+    ```bash
+    SESSION_SECRET=your-session-secret
+    JWT_SECRET=your-jwt-secret
+    ```
+  </Step>
+  <Step title="Add provider credentials">
+    ```typescript
+    import { auth } from "@colyseus/auth";
+
+    auth.oauth.addProvider("github", {
+      key: process.env.GITHUB_CLIENT_ID,
+      secret: process.env.GITHUB_CLIENT_SECRET,
+      scope: ["user:email"],
+    });
+
+    auth.oauth.addProvider("google", {
+      key: process.env.GOOGLE_CLIENT_ID,
+      secret: process.env.GOOGLE_CLIENT_SECRET,
+      scope: ["profile", "email"],
+    });
+    ```
+  </Step>
+  <Step title="Mount auth routes with OAuth callback">
+    ```typescript
+    import { listen } from "@colyseus/tools";
+    import { auth, type OAuthProviderCallback } from "@colyseus/auth";
+
+    listen({
+      initializeExpress: (app) => {
+        app.use(auth.prefix, auth.routes({
+          onFindUserByEmail: async (email) => db.users.findOne({ email }),
+          onRegisterWithEmailAndPassword: async (email, password) => db.users.create({ email, password }),
+
+          onOAuthProviderCallback: async (data, provider) => {
+            // data.profile contains the normalized provider profile
+            // data.access_token is the OAuth access token
+            const email = data.profile?.email;
+            let user = await db.users.findOne({ email });
+
+            if (!user) {
+              user = await db.users.create({
+                email,
+                displayName: data.profile?.name,
+                provider,
+              });
+            }
+
+            return user;
+          },
+        }));
+      },
+    });
+    ```
+  </Step>
+</Steps>
+
+## `OAuthProviderCallback`
+
+The callback is called after a successful OAuth flow:
+
+```typescript
+type OAuthProviderCallback = (
+  data: GrantSession["response"] & MayHaveUpgradeToken,
+  provider: OAuthProviderName,
+) => Promise<unknown>;
+```
+
+<ParamField path="data" type="GrantSession['response']">
+  The response from the grant library. Includes:
+
+  - `data.access_token` — OAuth access token
+  - `data.id_token` — OpenID Connect ID token (if requested)
+  - `data.profile` — normalized user profile (when `response` includes `'profile'`)
+  - `data.raw` — raw provider response
+  - `data.upgradingToken` — decoded JWT of the previously anonymous user, if present
+</ParamField>
+
+<ParamField path="provider" type="OAuthProviderName">
+  The provider name string (e.g. `"github"`, `"google"`, `"discord"`).
+</ParamField>
+
+The value you return from the callback is used to generate the JWT token sent to the client.
+
+## `OAuthProviderConfig`
+
+<ParamField path="key" type="string" required>
+  The `client_id` (OAuth 2.0) or `consumer_key` (OAuth 1.0) of your application.
+</ParamField>
+
+<ParamField path="secret" type="string" required>
+  The `client_secret` or `consumer_secret`.
+</ParamField>
+
+<ParamField path="scope" type="string[]">
+  OAuth scopes to request. Refer to your provider's documentation for available scopes.
+</ParamField>
+
+<ParamField path="nonce" type="boolean">
+  Generate a random nonce string for OpenID Connect flows.
+</ParamField>
+
+<ParamField path="custom_params" type="object">
+  Additional authorization parameters to include in the redirect URL.
+</ParamField>
+
+<ParamField path="response" type="Array<'tokens' | 'raw' | 'jwt' | 'profile'>">
+  Controls which parts of the provider response are included. Defaults to
+  `['tokens', 'raw', 'profile']`.
+</ParamField>
+
+## Client-side integration
+
+Open the OAuth URL in a popup and listen for the `postMessage` response:
+
+```typescript
+function loginWithOAuth(provider: string): Promise<{ user: any; token: string }> {
+  return new Promise((resolve, reject) => {
+    const popup = window.open(
+      `/auth/provider/${provider}`,
+      "oauth",
+      "width=600,height=700"
+    );
+
+    window.addEventListener("message", (event) => {
+      if (event.data.error) {
+        reject(new Error(event.data.error));
+      } else {
+        resolve(event.data); // { user, token }
+      }
+      popup?.close();
+    }, { once: true });
+  });
+}
+
+// Usage
+const { token } = await loginWithOAuth("github");
+const room = await colyseusClient.joinOrCreate("game", {}, token);
+```
+
+## Upgrading anonymous users via OAuth
+
+If the user is already signed in anonymously, pass the anonymous token as a query parameter when
+opening the OAuth URL:
+
+```
+GET /auth/provider/github?token=<anonymous-jwt>
+```
+
+The decoded anonymous token will be available as `data.upgradingToken` inside `onOAuthProviderCallback`,
+allowing you to migrate the anonymous user's data to the new account.
+
+## Redis session store
+
+When using `RedisPresence`, OAuth sessions are automatically stored in Redis using
+`connect-redis`. This ensures OAuth state is preserved correctly across multiple server
+processes. No additional configuration is required—the presence connection is reused automatically.
+
+<Note>
+  Set `SESSION_SECRET` in your environment. Without it, express-session will refuse to start.
+</Note>
+
+## Supported providers
+
+All providers supported by the grant library are available. Common examples:
+
+`github`, `google`, `discord`, `facebook`, `twitter`, `microsoft`, `apple`, `slack`, `linkedin`,
+`twitch`, `spotify`, `dropbox`, `instagram`, `reddit`, `gitlab`, `bitbucket`, `amazon`,
+`salesforce`, `okta`, `auth0`, `cognito`, and [180+ more](https://github.com/simov/grant#supported-providers).

@@ -1,0 +1,219 @@
+---
+title: "Transport"
+description: "Available Colyseus transport options: WebSocket (ws), uWebSockets.js, Bun, and TCP — with install and configuration details."
+---
+
+Colyseus separates the networking layer from the game logic through the `Transport` abstraction. You can choose the transport that best fits your runtime and performance requirements.
+
+<CardGroup cols={2}>
+  <Card title="WebSocket (ws)" icon="plug">
+    Node.js default. Uses the `ws` library. Best for compatibility.
+  </Card>
+  <Card title="uWebSockets.js" icon="bolt">
+    High-performance C++ WebSocket implementation. Best for large-scale Node.js servers.
+  </Card>
+  <Card title="Bun WebSockets" icon="rabbit">
+    Native Bun WebSocket server. Required when running Colyseus under Bun.
+  </Card>
+  <Card title="TCP" icon="network-wired">
+    Raw TCP transport for non-browser clients (e.g. native game clients).
+  </Card>
+</CardGroup>
+
+---
+
+## WebSocket transport (`@colyseus/ws-transport`)
+
+The default transport when no `transport` option is provided. Built on the battle-tested `ws` npm package and Node.js `http.Server`.
+
+<CodeGroup>
+  ```bash npm
+  npm install --save @colyseus/ws-transport
+  ```
+  ```bash yarn
+  yarn add @colyseus/ws-transport
+  ```
+  ```bash pnpm
+  pnpm add @colyseus/ws-transport
+  ```
+</CodeGroup>
+
+```typescript
+import { defineServer, defineRoom } from "@colyseus/core";
+import { WebSocketTransport } from "@colyseus/ws-transport";
+
+const server = defineServer({
+  rooms: { my_room: defineRoom(MyRoom) },
+  transport: new WebSocketTransport({
+    // Maximum payload size in bytes (default: 4096 / 4 KB)
+    maxPayload: 4 * 1024,
+
+    // Ping interval in milliseconds (default: 3000)
+    pingInterval: 3000,
+
+    // How many missed pings before the client is terminated (default: 2)
+    pingMaxRetries: 2,
+
+    // Disable per-message deflate compression (default: false)
+    perMessageDeflate: false,
+  }),
+});
+```
+
+### Bring your own HTTP server
+
+You can pass an existing `http.Server` or `https.Server` if you need to attach other services to the same port:
+
+```typescript
+import http from "http";
+import { WebSocketTransport } from "@colyseus/ws-transport";
+
+const httpServer = http.createServer();
+
+const transport = new WebSocketTransport({ server: httpServer });
+```
+
+---
+
+## uWebSockets.js transport (`@colyseus/uwebsockets-transport`)
+
+A high-performance transport based on [uWebSockets.js](https://github.com/uNetworking/uWebSockets.js), a native C++ WebSocket implementation. Significantly lower memory overhead and higher throughput than the `ws`-based transport.
+
+<CodeGroup>
+  ```bash npm
+  npm install --save @colyseus/uwebsockets-transport
+  ```
+  ```bash yarn
+  yarn add @colyseus/uwebsockets-transport
+  ```
+  ```bash pnpm
+  pnpm add @colyseus/uwebsockets-transport
+  ```
+</CodeGroup>
+
+```typescript
+import { defineServer, defineRoom } from "@colyseus/core";
+import { uWebSocketsTransport } from "@colyseus/uwebsockets-transport";
+
+const server = defineServer({
+  rooms: { my_room: defineRoom(MyRoom) },
+  transport: new uWebSocketsTransport({
+    // Maximum backpressure before the connection is dropped (default: 1 MB)
+    maxBackpressure: 1024 * 1024,
+
+    // Maximum incoming message size in bytes (default: 4096 / 4 KB)
+    maxPayloadLength: 4 * 1024,
+
+    // Compression (default: DISABLED)
+    // import uWebSockets from 'uWebSockets.js';
+    // compression: uWebSockets.SHARED_COMPRESSOR
+
+    // Automatically send WebSocket pings (default: true)
+    sendPingsAutomatically: true,
+  }),
+});
+```
+
+### SSL / TLS
+
+Pass an `appOptions` object as the second constructor argument to enable SSL:
+
+```typescript
+new uWebSocketsTransport(
+  { /* WebSocketBehavior options */ },
+  {
+    cert_file_name: "/path/to/cert.pem",
+    key_file_name: "/path/to/key.pem",
+  }
+)
+```
+
+### Express integration with uWebSockets
+
+The `uWebSocketsTransport` supports Express via the `uwebsockets-express` adapter:
+
+```bash
+# Express v5
+npm install --save uwebsockets-express@^2.0.1
+
+# Express v4
+npm install --save uwebsockets-express@^1.4.1
+```
+
+```typescript
+defineServer({
+  rooms: { my_room: defineRoom(MyRoom) },
+  transport: new uWebSocketsTransport(),
+  express: (app) => {
+    app.get("/api/health", (req, res) => res.send("OK"));
+  },
+});
+```
+
+<Note>
+  The `uWebSocketsTransport` does not use Node.js `http.Server`. Express routes
+  are bridged through the uWebSockets HTTP layer via the `uwebsockets-express`
+  module.
+</Note>
+
+---
+
+## Bun WebSockets transport (`@colyseus/bun-websockets`)
+
+Uses Bun's built-in WebSocket server. When using `@colyseus/tools` under Bun, this transport is selected automatically.
+
+<CodeGroup>
+  ```bash bun
+  bun add @colyseus/bun-websockets
+  ```
+</CodeGroup>
+
+```typescript
+import { defineServer, defineRoom } from "@colyseus/core";
+import { BunWebSockets } from "@colyseus/bun-websockets";
+
+const server = defineServer({
+  rooms: { my_room: defineRoom(MyRoom) },
+  transport: new BunWebSockets({
+    // Maximum incoming message size in bytes (default: 4096 / 4 KB)
+    maxPayloadLength: 4 * 1024,
+
+    // Any other Bun WebSocketHandler options (except message/open/drain/close/ping/pong)
+  }),
+});
+
+server.listen(2567);
+```
+
+When using `@colyseus/tools`, Bun is detected automatically:
+
+```typescript
+import { listen } from "@colyseus/tools";
+import { defineRoom } from "@colyseus/core";
+
+// @colyseus/bun-websockets is used automatically when running under Bun
+listen({
+  rooms: { my_room: defineRoom(MyRoom) },
+});
+```
+
+<Note>
+  The `BunWebSockets` transport uses `bun-serve-express` for Express
+  compatibility, which is included as a dependency.
+</Note>
+
+---
+
+## Performance notes
+
+| Transport | Runtime | Throughput | Notes |
+|---|---|---|---|
+| `@colyseus/ws-transport` | Node.js | Good | Most compatible, uses Node.js `http.Server` |
+| `@colyseus/uwebsockets-transport` | Node.js | Excellent | Native C++, lower memory, best for scale |
+| `@colyseus/bun-websockets` | Bun | Excellent | Native Bun server, required under Bun |
+
+<Tip>
+  For high-concurrency production deployments on Node.js, prefer
+  `@colyseus/uwebsockets-transport`. It avoids the overhead of Node.js's
+  JavaScript-based WebSocket layer.
+</Tip>

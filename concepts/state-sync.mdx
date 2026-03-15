@@ -1,0 +1,277 @@
+---
+title: "State synchronization"
+description: "How Colyseus tracks state mutations, computes binary delta patches, and delivers them to clients."
+---
+
+Colyseus keeps every connected client in sync with the server-side game state automatically. You mutate `this.state` on the server; every client receives only the fields that changed, encoded as a compact binary delta.
+
+## How it works
+
+<Steps>
+  <Step title="Define state with Schema">
+    You describe your game state using `@colyseus/schema`. Only fields annotated with `@type()` (or defined through the functional `schema()` API) are tracked and synchronized.
+
+    ```typescript
+    import { Schema, type, MapSchema } from "@colyseus/schema";
+
+    class Player extends Schema {
+      @type("number") x: number = 0;
+      @type("number") y: number = 0;
+      @type("string") name: string = "";
+    }
+
+    class GameState extends Schema {
+      @type({ map: Player }) players = new MapSchema<Player>();
+      @type("number") tick: number = 0;
+    }
+    ```
+  </Step>
+
+  <Step title="Assign to room state">
+    Inside `onCreate`, assign an instance of your state to `this.state`. This registers the serializer and begins tracking mutations.
+
+    ```typescript
+    export class GameRoom extends Room<{ state: GameState }> {
+      onCreate() {
+        this.state = new GameState();
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Mutate freely">
+    Change any tracked field anywhere in your room code. Colyseus tracks all changes internally through a change tracking system built into Schema.
+
+    ```typescript
+    onJoin(client: Client) {
+      const player = new Player();
+      player.name = client.sessionId;
+      this.state.players.set(client.sessionId, player);
+    }
+    ```
+  </Step>
+
+  <Step title="Patch is broadcast automatically">
+    Every `patchRate` milliseconds (default 50 ms, 20 fps), `broadcastPatch()` runs. It asks the serializer to compute a binary diff of all changes since the last patch and sends it to each connected client.
+  </Step>
+
+  <Step title="Client applies the patch">
+    The client SDK receives the binary diff, applies it to its local copy of the state, and fires the registered `onChange`, `onAdd`, or `onRemove` callbacks for the changed fields.
+  </Step>
+</Steps>
+
+## Schema definition
+
+`@colyseus/schema` supports two authoring styles:
+
+<Tabs>
+  <Tab title="Decorator API">
+    ```typescript
+    import { Schema, type, MapSchema, ArraySchema } from "@colyseus/schema";
+
+    class Player extends Schema {
+      @type("number") x: number = 0;
+      @type("number") y: number = 0;
+      @type("boolean") alive: boolean = true;
+    }
+
+    class GameState extends Schema {
+      @type({ map: Player }) players = new MapSchema<Player>();
+      @type(["string"]) log = new ArraySchema<string>();
+      @type("uint32") round: number = 1;
+    }
+    ```
+
+    Requires `experimentalDecorators: true` in `tsconfig.json`.
+  </Tab>
+  <Tab title="Functional API">
+    ```typescript
+    import { schema, type SchemaType, MapSchema } from "@colyseus/schema";
+
+    const Player = schema({
+      x: "number",
+      y: "number",
+      alive: "boolean",
+    });
+    type Player = SchemaType<typeof Player>;
+
+    const GameState = schema({
+      players: { map: Player },
+      round: "uint32",
+    });
+    type GameState = SchemaType<typeof GameState>;
+    ```
+
+    No decorator support required. Works with all modern TypeScript targets.
+  </Tab>
+</Tabs>
+
+Available primitive types: `"string"`, `"number"`, `"boolean"`, `"int8"`, `"uint8"`, `"int16"`, `"uint16"`, `"int32"`, `"uint32"`, `"int64"`, `"uint64"`, `"float32"`, `"float64"`.
+
+For nested structures use `{ map: ChildType }`, `{ array: ChildType }`, or `{ set: ChildType }`.
+
+## Delta compression and binary encoding
+
+When `broadcastPatch()` runs, the `SchemaSerializer` iterates every tracked object in the state tree and checks its internal change log. Only fields that have changed since the last patch are included in the outgoing message.
+
+The diff is encoded as a compact binary format (not JSON) by `@colyseus/schema`. Benefits:
+
+- **Smaller payloads** — unchanged fields add zero bytes.
+- **Faster parsing** — binary decoding is faster than JSON.
+- **Ordered delivery** — patches arrive over the WebSocket in order.
+
+For application-level messages (`room.send()` / `client.send()`), Colyseus uses **MessagePack** (`msgpackr`) rather than plain JSON. MessagePack is a binary-compact, schema-free format that handles arbitrary payloads without any schema definition.
+
+## Controlling the patch rate
+
+Adjust how often patches are sent by setting `this.patchRate` (in milliseconds):
+
+```typescript
+onCreate() {
+  this.state = new GameState();
+
+  // Send 10 patches per second instead of the default 20
+  this.patchRate = 100;
+}
+```
+
+Set `patchRate` to `null` or `0` to disable automatic patching entirely. You can then trigger a patch manually:
+
+```typescript
+this.broadcastPatch();
+```
+
+This is useful for turn-based games where state only changes on explicit player actions.
+
+## Client-side callbacks
+
+On the client, `@colyseus/schema` exposes reactive callbacks that fire when parts of the state change. Import `@colyseus/sdk` to get the client SDK and schema decoder together.
+
+### Listening to a primitive field
+
+```typescript
+room.state.listen("tick", (newValue, previousValue) => {
+  console.log("tick:", newValue);
+});
+```
+
+### Tracking items in a MapSchema
+
+```typescript
+room.state.players.onAdd((player, sessionId) => {
+  console.log("player joined:", sessionId);
+
+  // Listen to individual field changes on each player
+  player.listen("x", (newX) => updateSprite(sessionId, newX, player.y));
+  player.listen("y", (newY) => updateSprite(sessionId, player.x, newY));
+});
+
+room.state.players.onRemove((player, sessionId) => {
+  console.log("player left:", sessionId);
+  removeSprite(sessionId);
+});
+```
+
+### Detecting any change
+
+```typescript
+room.state.onChange(() => {
+  // Called after every patch that contains at least one change
+  renderFrame(room.state);
+});
+```
+
+<Note>
+Callbacks fire synchronously as the client SDK decodes each incoming binary patch. You do not need to poll the state — mutations are pushed to you.
+</Note>
+
+## Full server + client example
+
+**Server — `GameRoom.ts`:**
+
+```typescript
+import { Room, Client } from "@colyseus/core";
+import { Schema, type, MapSchema } from "@colyseus/schema";
+
+class Player extends Schema {
+  @type("number") x: number = 0;
+  @type("number") y: number = 0;
+}
+
+class GameState extends Schema {
+  @type({ map: Player }) players = new MapSchema<Player>();
+}
+
+export class GameRoom extends Room<{ state: GameState }> {
+  onCreate() {
+    this.state = new GameState();
+
+    this.onMessage("move", (client, data: { x: number; y: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (player) {
+        player.x = data.x;
+        player.y = data.y;
+      }
+    });
+  }
+
+  onJoin(client: Client) {
+    this.state.players.set(client.sessionId, new Player());
+  }
+
+  onLeave(client: Client) {
+    this.state.players.delete(client.sessionId);
+  }
+}
+```
+
+**Client — `main.ts`:**
+
+```typescript
+import { Client } from "@colyseus/sdk";
+
+const client = new Client("ws://localhost:2567");
+const room = await client.joinOrCreate("game");
+
+const sprites: Record<string, { x: number; y: number }> = {};
+
+room.state.players.onAdd((player, sessionId) => {
+  sprites[sessionId] = { x: player.x, y: player.y };
+
+  player.listen("x", (x) => { sprites[sessionId].x = x; });
+  player.listen("y", (y) => { sprites[sessionId].y = y; });
+});
+
+room.state.players.onRemove((_player, sessionId) => {
+  delete sprites[sessionId];
+});
+
+// Send movement
+document.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowRight") room.send("move", { x: 10, y: 0 });
+});
+```
+
+## Performance tips
+
+- Prefer narrow types (`uint8`, `int16`) over generic `number` for integer fields to reduce patch size.
+- Avoid deeply nested Schema hierarchies — flatter structures produce smaller diffs.
+- For per-client visibility filtering (e.g., fog-of-war), use the `@view()` decorator from `@colyseus/schema`.
+- If a field changes every single tick, consider whether it truly needs to be part of the synchronized state or if it can be computed client-side.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="State schema reference" icon="database" href="/state/overview">
+    Full reference for Schema types, collections, and the callback API.
+  </Card>
+  <Card title="Client-server communication" icon="message" href="/concepts/client-server">
+    Sending application messages alongside state patches.
+  </Card>
+  <Card title="Room lifecycle" icon="door-open" href="/concepts/rooms">
+    How rooms are created, used, and disposed.
+  </Card>
+  <Card title="Room state API" icon="server" href="/server/room-state">
+    Server-side API for setting and updating state.
+  </Card>
+</CardGroup>

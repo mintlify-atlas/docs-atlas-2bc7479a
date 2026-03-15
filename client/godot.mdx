@@ -1,0 +1,133 @@
+---
+title: "Godot"
+description: "Install and use the Colyseus Godot SDK to connect your Godot game to a Colyseus server."
+---
+
+## Installation
+
+<Steps>
+  <Step title="Download the Godot SDK">
+    Download the latest Godot SDK release from GitHub:
+
+    [Browse Godot SDK releases](https://github.com/colyseus/native-sdk/releases?q=godot+sdk&expanded=true)
+
+    Download the `.zip` file for your target platform (Windows, macOS, Linux).
+  </Step>
+
+  <Step title="Copy the addon into your project">
+    Extract the archive and copy the `addons/colyseus` folder into your Godot project's `addons/` directory.
+  </Step>
+
+  <Step title="Enable the plugin">
+    In Godot, open **Project → Project Settings → Plugins** and enable **Colyseus Multiplayer SDK**.
+  </Step>
+</Steps>
+
+## Connecting to a room
+
+The Godot SDK exposes a `ColyseusClient` node and a matching GDScript API:
+
+```gdscript
+extends Node
+
+var client: ColyseusClient
+var room: ColyseusRoom
+
+func _ready():
+    client = ColyseusClient.new("ws://localhost:2567")
+    add_child(client)
+    _join_room()
+
+func _join_room():
+    room = await client.join_or_create("game", { "map": "forest" })
+    print("Joined room: ", room.room_id)
+    print("Session ID: ", room.session_id)
+```
+
+## Sending and receiving messages
+
+```gdscript
+# Send a message to the server
+room.send("move", { "direction": "up" })
+
+# Listen for a specific message type
+room.on_message("chat", func(payload):
+    print("Chat: ", payload["text"])
+)
+
+# Listen for all messages
+room.on_message("*", func(type, payload):
+    print("Message type: ", type, " payload: ", payload)
+)
+```
+
+## Listening to room events
+
+```gdscript
+# State change
+room.on_state_change.connect(func(state):
+    render_game_state(state)
+)
+
+# Error
+room.on_error.connect(func(code, message):
+    push_error("Room error %d: %s" % [code, message])
+)
+
+# Leave
+room.on_leave.connect(func(code):
+    print("Left room with code: ", code)
+)
+```
+
+## State synchronization
+
+The Godot SDK uses the same binary schema protocol as the JavaScript SDK. Generate GDScript state classes from your server-side TypeScript schema:
+
+```bash
+npx @colyseus/schema-codegen path/to/MyState.ts --output ./addons/colyseus/state --language gdscript
+```
+
+Pass the root state class when joining:
+
+```gdscript
+room = await client.join_or_create("game", {}, GameState)
+```
+
+Listen to granular field changes:
+
+```gdscript
+# React when a player is added
+room.state.players.on_add(func(player, session_id):
+    print("Player added: ", session_id)
+    spawn_player(session_id, player)
+
+    # Track position changes
+    player.position.on_change(func():
+        update_player_position(session_id, player.position.x, player.position.y)
+    )
+)
+
+room.state.players.on_remove(func(player, session_id):
+    remove_player(session_id)
+)
+```
+
+## Leaving a room
+
+```gdscript
+await room.leave()
+```
+
+## Reconnection
+
+```gdscript
+var token = room.reconnection_token
+
+# ... later
+room = await client.reconnect(token)
+```
+
+<Tip>
+The Godot SDK source and additional demos (including a Tank Battle example) are available at [github.com/colyseus/native-sdk](https://github.com/colyseus/native-sdk).
+</Tip>

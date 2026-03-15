@@ -1,0 +1,164 @@
+---
+title: "Defold"
+description: "Install and use the Colyseus Defold SDK to connect your Defold game to a Colyseus server."
+---
+
+## Installation
+
+<Steps>
+  <Step title="Add the dependency to your project">
+    Open your Defold project's `game.project` file and add the Colyseus SDK URL to the **Dependencies** field under **Project**.
+
+    Find the latest release URL from the [Colyseus native SDK releases](https://github.com/colyseus/native-sdk/releases) page — look for the Defold SDK `.zip` asset and copy its URL.
+  </Step>
+
+  <Step title="Fetch libraries">
+    In the Defold editor, go to **Project → Fetch Libraries** to download and integrate the dependency.
+  </Step>
+
+  <Step title="Require the module">
+    Require the Colyseus module at the top of any script that needs to connect to the server:
+
+    ```lua
+    local colyseus = require("colyseus.client")
+    ```
+  </Step>
+</Steps>
+
+## Connecting to a room
+
+```lua
+local colyseus = require("colyseus.client")
+
+local client
+local room
+
+function init(self)
+    -- Create client
+    client = colyseus.new("ws://localhost:2567")
+end
+
+function join_room(self)
+    client:join_or_create("game", { map = "forest" }, function(err, _room)
+        if err then
+            print("Error joining room:", err)
+            return
+        end
+        room = _room
+        print("Joined room:", room:id())
+        print("Session ID:", room:session_id())
+    end)
+end
+```
+
+## Sending and receiving messages
+
+```lua
+-- Send a message to the server
+room:send("move", { direction = "up" })
+
+-- Listen for a specific message
+room:on_message("chat", function(payload)
+    print("Chat:", payload.text)
+end)
+
+-- Listen for all messages
+room:on_message("*", function(message_type, payload)
+    print("Message:", message_type, payload)
+end)
+```
+
+## Listening to room events
+
+```lua
+-- State change
+room:on("statechange", function(state)
+    render_game_state(state)
+end)
+
+-- Error
+room:on("error", function(code, message)
+    print("Room error " .. code .. ": " .. message)
+end)
+
+-- Leave
+room:on("leave", function(code)
+    print("Left room with code:", code)
+end)
+```
+
+## State synchronization
+
+The Defold SDK decodes the server's binary schema patches into Lua tables. Generate Lua state definitions from your server-side schema:
+
+```bash
+npx @colyseus/schema-codegen path/to/MyState.ts --output ./colyseus/state --language lua
+```
+
+Pass the root state module when joining:
+
+```lua
+local GameState = require("colyseus.state.GameState")
+
+client:join_or_create("game", {}, GameState, function(err, _room)
+    room = _room
+end)
+```
+
+Listen to collection changes:
+
+```lua
+room.state.players:on_add(function(player, session_id)
+    print("Player added:", session_id)
+    spawn_player(session_id, player)
+
+    -- Track position changes for this player
+    player.position:on_change(function()
+        update_player_position(session_id, player.position.x, player.position.y)
+    end)
+end)
+
+room.state.players:on_remove(function(player, session_id)
+    remove_player(session_id)
+end)
+```
+
+## Leaving a room
+
+```lua
+room:leave()
+```
+
+Pass `false` to skip the graceful handshake:
+
+```lua
+room:leave(false)
+```
+
+## Reconnection
+
+```lua
+local token = room:reconnection_token()
+
+-- Store token, then later:
+client:reconnect(token, function(err, _room)
+    if not err then
+        room = _room
+        print("Reconnected!")
+    end
+end)
+```
+
+<Note>
+The Defold SDK uses coroutines internally. Make sure you call `colyseus.update()` from your script's `update(self, dt)` function to process incoming messages:
+
+```lua
+function update(self, dt)
+    colyseus.update()
+end
+```
+</Note>
+
+<Tip>
+A complete Tank Battle demo for Defold is available at [github.com/endel/tank-battle-multiplayer/tree/master/defold](https://github.com/endel/tank-battle-multiplayer/tree/master/defold).
+</Tip>

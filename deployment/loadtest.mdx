@@ -1,0 +1,147 @@
+---
+title: "Load testing"
+description: "Stress test your Colyseus server with @colyseus/loadtest: simulate hundreds of virtual clients, measure throughput, and identify bottlenecks before launch."
+---
+
+`@colyseus/loadtest` is a command-line tool that connects a configurable number of virtual clients to your Colyseus server simultaneously. It renders a live terminal UI showing connection counts, network throughput, CPU and memory usage of the load test process, and a scrollable log of all events.
+
+## Install
+
+```bash
+npm install --save-dev @colyseus/loadtest
+```
+
+## Writing a load test script
+
+Create a script that defines what each virtual client does after joining a room. The script exports a `main` function and passes it to `cli()`:
+
+```typescript
+// loadtest/bot.ts
+import { cli, Options } from "@colyseus/loadtest";
+import { Client, Room } from "colyseus.js";
+
+async function main(options: Options) {
+    const client = new Client(options.endpoint);
+
+    // Join or create a room using the room name from the CLI
+    const room: Room = await client.joinOrCreate(options.roomName, options.requestJoinOptions);
+
+    // Send a message to the server
+    room.send("ping", { timestamp: Date.now() });
+
+    // Handle messages from the server
+    room.onMessage("pong", (payload) => {
+        console.log("pong received:", payload);
+    });
+
+    // Handle state changes
+    room.onStateChange((state) => {
+        // inspect the synchronized state
+    });
+
+    // Handle disconnection
+    room.onLeave((code) => {
+        console.log("client left, code:", code);
+    });
+}
+
+cli(main);
+```
+
+Each call to `main()` represents one virtual client. `@colyseus/loadtest` calls `main()` once per simulated client, in sequence, with an optional delay between each connection.
+
+The `options` parameter contains all CLI arguments, including:
+
+| Field | Description |
+|---|---|
+| `options.endpoint` | WebSocket endpoint (e.g. `ws://localhost:2567`) |
+| `options.roomName` | Room handler name passed via `--room` |
+| `options.roomId` | Room ID passed via `--roomId` |
+| `options.numClients` | Total number of clients to connect |
+| `options.clientId` | Index of the current client (0-based) |
+| `options.requestJoinOptions` | Additional join options forwarded to the room |
+
+## Running a load test
+
+Run your script with `colyseus-loadtest`, specifying the endpoint, room name, and number of clients:
+
+```bash
+npx colyseus-loadtest loadtest/bot.ts --endpoint ws://localhost:2567 --room game --numClients 100
+```
+
+### All CLI options
+
+| Option | Default | Description |
+|---|---|---|
+| `--endpoint` | `ws://localhost:2567` | WebSocket endpoint for all connections. |
+| `--room` | — | Room handler name to join. Use instead of `--roomId`. |
+| `--roomId` | — | Specific room ID to join. Use instead of `--room`. |
+| `--numClients` | `1` | Number of virtual clients to connect. |
+| `--delay` | `0` | Milliseconds to wait between each client connection. |
+| `--reestablishAllDelay` | `0` | Milliseconds to wait before dropping and reconnecting all clients. Set this to simulate churn. |
+| `--retryFailed` | `0` | Milliseconds to wait before retrying failed connections. |
+| `--output` | — | File path to write a log of the test results. |
+| `--project` | — | Path to a `tsconfig.json` file for TypeScript compilation. |
+
+### Example: ramp up with a delay between connections
+
+Connect 500 clients, with 50ms between each connection to avoid a thundering herd:
+
+```bash
+npx colyseus-loadtest loadtest/bot.ts \
+  --endpoint ws://localhost:2567 \
+  --room game \
+  --numClients 500 \
+  --delay 50
+```
+
+### Example: simulate client churn
+
+Connect 200 clients, then drop and reconnect all of them every 30 seconds:
+
+```bash
+npx colyseus-loadtest loadtest/bot.ts \
+  --endpoint ws://localhost:2567 \
+  --room game \
+  --numClients 200 \
+  --reestablishAllDelay 30000
+```
+
+### Example: save results to a file
+
+```bash
+npx colyseus-loadtest loadtest/bot.ts \
+  --endpoint ws://localhost:2567 \
+  --room game \
+  --numClients 100 \
+  --output results/loadtest-$(date +%Y%m%d).log
+```
+
+## The terminal UI
+
+While running, `@colyseus/loadtest` renders a terminal dashboard with four panels:
+
+- **Header**: endpoint, room name, serialization method, and elapsed time
+- **Clients**: target client count, currently connected, disconnected, and failed connections
+- **Processing**: heap memory and CPU usage of the load test process itself
+- **Networking**: total bytes received and bytes sent
+- **Logs**: scrollable log of all `console.log`, `console.warn`, and `console.error` output from your bot script
+
+Press `q`, `Escape`, or `Ctrl+C` to stop the test. If `--output` is set, the final summary is written to the log file before exit.
+
+## Interpreting results
+
+After a test run, review:
+
+- **Failed connections**: a high failed count indicates the server is rejecting connections, hitting resource limits, or `onAuth()` is returning errors under load
+- **Disconnected clients**: unexpected disconnections point to room crashes, memory pressure, or unhandled exceptions in room logic
+- **Bytes received/sent**: unusually high values may indicate your state schema is broadcasting too much data per tick — review which schema fields actually need to be synchronized
+- **Total errors**: check the log panel for error messages from your bot script to identify which operations are failing
+
+<Tip>
+  Run the load test against a staging environment that mirrors production hardware. Results on a developer laptop will not reflect real-world server capacity.
+</Tip>
+
+<Note>
+  `@colyseus/loadtest` uses the `@colyseus/sdk` client to connect, so it exercises the same code path as real game clients. Any bug that affects real clients will also appear in the load test.
+</Note>

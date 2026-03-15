@@ -1,0 +1,286 @@
+---
+title: "Room Messages"
+description: "Handling messages in Colyseus rooms: onMessage, the messages property, validate() with Zod, client.send, broadcast, and broadcast options."
+---
+
+Colyseus provides two complementary APIs for handling client messages: the imperative `onMessage()` method and the declarative `messages` property.
+
+---
+
+## onMessage()
+
+```typescript
+public onMessage<T>(
+  type: string | number,
+  callback: (client: Client, message: T) => void
+): () => void
+```
+
+Registers a handler for a specific message type. Returns an unbind function.
+
+```typescript
+onCreate() {
+  // String message type
+  this.onMessage("move", (client, data: { x: number; y: number }) => {
+    const player = this.state.players.get(client.sessionId);
+    player.x = data.x;
+    player.y = data.y;
+  });
+
+  // Numeric message type
+  this.onMessage(0, (client, data) => {
+    console.log("received message type 0", data);
+  });
+}
+```
+
+To stop receiving a specific message type, call the returned unbind function:
+
+```typescript
+const unbindMove = this.onMessage("move", handler);
+
+// later...
+unbindMove();
+```
+
+### Wildcard handler
+
+Register `"*"` to catch all message types that have no specific handler:
+
+```typescript
+this.onMessage("*", (client, type, message) => {
+  console.log(`received unhandled message type "${type}":`, message);
+});
+```
+
+<Note>
+  In production, sending a message type with no handler closes the connection
+  with an error. In `devMode`, the error is sent back to the client instead.
+</Note>
+
+---
+
+## messages property (declarative style)
+
+Declare message handlers as a typed object on the class. This approach works well with TypeScript inference and the `validate()` helper:
+
+```typescript
+import { Room, validate } from "@colyseus/core";
+import { z } from "zod";
+
+class GameRoom extends Room {
+  messages = {
+    move: (client: Client, data: { x: number; y: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      player.x = data.x;
+      player.y = data.y;
+    },
+
+    chat: (client: Client, data: { text: string }) => {
+      this.broadcast("chat", {
+        from: client.auth.username,
+        text: data.text,
+      });
+    },
+
+    // Wildcard fallback using "_" key
+    _: (client: Client, type: string | number, message: unknown) => {
+      console.log("unhandled:", type, message);
+    },
+  };
+}
+```
+
+<Note>
+  The `"_"` key in `messages` is treated as the wildcard `"*"` handler.
+</Note>
+
+Messages registered via the `messages` property are bound to the room instance automatically, so `this` works correctly.
+
+---
+
+## validate() — schema validation
+
+The `validate()` helper wraps a message handler with a [Standard Schema](https://standardschema.dev/) validator. Any Standard Schema-compatible library works, including Zod, Valibot, and ArkType.
+
+```typescript
+import { Room, validate } from "@colyseus/core";
+import { z } from "zod";
+
+const moveSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+});
+
+class GameRoom extends Room {
+  messages = {
+    // message type is automatically inferred from the schema
+    move: validate(moveSchema, (client, message) => {
+      // message.x and message.y are typed as number
+      const player = this.state.players.get(client.sessionId);
+      player.x = message.x;
+      player.y = message.y;
+    }),
+  };
+}
+```
+
+You can also use `validate()` with `onMessage()` directly:
+
+```typescript
+this.onMessage("move", moveSchema, (client, message) => {
+  // message is validated and typed
+});
+```
+
+If validation fails, Colyseus closes the connection with `CloseCode.WITH_ERROR`.
+
+---
+
+## client.send()
+
+Send a message from the server to a specific client:
+
+```typescript
+client.send(type: string | number, message?: any, options?: ISendOptions): void
+
+interface ISendOptions {
+  afterNextPatch?: boolean;  // delay delivery until after next state patch
+}
+```
+
+```typescript
+// Send immediately
+client.send("welcome", { map: "forest", startPosition: { x: 0, y: 0 } });
+
+// Send after the next state patch (ensures client has latest state first)
+client.send("round_started", { round: 1 }, { afterNextPatch: true });
+
+// Numeric type
+client.send(1, { health: 100 });
+```
+
+---
+
+## broadcast()
+
+Send a message to all connected clients:
+
+```typescript
+public broadcast<K>(
+  type: K,
+  message?: any,
+  options?: IBroadcastOptions
+): void
+
+interface IBroadcastOptions {
+  except?: Client | Client[];  // exclude one or more clients
+  afterNextPatch?: boolean;    // delay until after the next state patch
+}
+```
+
+### Basic broadcast
+
+```typescript
+// Send to all clients
+this.broadcast("explosion", { x: 10, y: 20, radius: 5 });
+```
+
+### Excluding specific clients
+
+Use `except` to exclude the sender (common pattern for relaying actions):
+
+```typescript
+this.onMessage("chat", (client, data) => {
+  // relay to everyone except the sender
+  this.broadcast("chat", {
+    from: client.auth.username,
+    text: data.text,
+  }, { except: client });
+});
+```
+
+Exclude multiple clients by passing an array:
+
+```typescript
+this.broadcast("secret", payload, { except: [clientA, clientB] });
+```
+
+### Sending after the next state patch
+
+Use `afterNextPatch` to ensure the message arrives at the client after the accompanying state update:
+
+```typescript
+this.onMessage("attack", (client, data) => {
+  // update state
+  const enemy = this.state.enemies.get(data.enemyId);
+  enemy.health -= data.damage;
+
+  if (enemy.health <= 0) {
+    this.state.enemies.delete(data.enemyId);
+
+    // broadcast kill after clients receive the state update
+    this.broadcast("enemy_killed", {
+      killedBy: client.sessionId,
+      enemyId: data.enemyId,
+    }, { afterNextPatch: true });
+  }
+});
+```
+
+### Per-client afterNextPatch
+
+`afterNextPatch` also works on `client.send()`:
+
+```typescript
+onJoin(client: Client) {
+  this.state.players.set(client.sessionId, new Player());
+
+  // welcome message arrives after client receives the state with the new player
+  client.send("welcome", { sessionId: client.sessionId }, { afterNextPatch: true });
+}
+```
+
+---
+
+## broadcastBytes()
+
+For performance-critical use cases, broadcast a raw `Uint8Array` without MessagePack serialization:
+
+```typescript
+public broadcastBytes(
+  type: string | number,
+  message: Uint8Array,
+  options: IBroadcastOptions
+): void
+```
+
+```typescript
+const rawPositions = encodePositionsManually(this.state.players);
+this.broadcastBytes("positions", rawPositions, {});
+```
+
+---
+
+## onMessageBytes()
+
+Receive raw binary messages from clients without MessagePack decoding:
+
+```typescript
+this.onMessageBytes("positions", (client, buffer: Uint8Array) => {
+  // process raw binary data
+});
+```
+
+---
+
+## Rate limiting
+
+Set `this.maxMessagesPerSecond` to automatically disconnect clients that send too many messages:
+
+```typescript
+onCreate() {
+  // disconnect clients sending more than 20 messages/second
+  this.maxMessagesPerSecond = 20;
+}
+```

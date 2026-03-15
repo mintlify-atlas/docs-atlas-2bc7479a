@@ -1,0 +1,70 @@
+---
+title: "Client SDK overview"
+description: "What the @colyseus/sdk package provides and how it connects your game to a Colyseus server."
+---
+
+The `@colyseus/sdk` package is the official JavaScript/TypeScript client for Colyseus. It handles WebSocket connections to your Colyseus server, matchmaking requests, real-time state synchronization, and authentication — giving you a single, consistent API across browsers and Node.js.
+
+## What it provides
+
+- **`ColyseusSDK` / `Client`** — connects to a Colyseus server and provides join, create, and reconnect methods
+- **`Room`** — represents a live connection to a room instance; carries the synchronized state and a message bus
+- **`Auth`** — email/password, anonymous, and OAuth provider sign-in with automatic token storage
+- **`HTTP`** — a typed fetch wrapper for calling custom server routes
+- **`getStateCallbacks()`** — fine-grained reactive callbacks for schema state changes
+
+## Compatibility
+
+The SDK targets **ES2019+** and works in:
+
+| Environment | Notes |
+|---|---|
+| Browser (ESM) | Loaded via `dist/colyseus.js` (`browser` export) |
+| Node.js ≥ 12 | Uses the `build/index.cjs` or `build/index.mjs` export |
+| React Native | `window.location` detection is skipped gracefully |
+| Cocos Creator (native) | `window.location.hostname` detection is skipped gracefully |
+| Discord Embedded SDK | Custom URL builder applied automatically when `discordsays.com` is detected |
+
+The package ships TypeScript declarations (`build/index.d.ts`) and is fully typed against your server's `SDKTypes`, so IDE autocompletion surfaces the right room names, join options, and message payloads automatically.
+
+## Quick example
+
+```typescript
+import { Client } from "@colyseus/sdk";
+
+// 1. Create a client pointed at your server
+const client = new Client("ws://localhost:2567");
+
+// 2. Join or create a room named "game"
+const room = await client.joinOrCreate("game", { mode: "ranked" });
+
+// 3. React to every state change
+room.onStateChange((state) => {
+  console.log("New state:", state);
+});
+
+// 4. Listen for a specific message
+room.onMessage("player_died", (payload) => {
+  console.log("Player died:", payload.playerId);
+});
+
+// 5. Send a message to the server
+room.send("move", { x: 10, y: 0 });
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="package" href="/client/installation">
+    Install `@colyseus/sdk` with npm, yarn, or pnpm, or load it from a CDN.
+  </Card>
+  <Card title="Connecting" icon="plug" href="/client/connecting">
+    Create a `Client`, configure endpoints, and join rooms.
+  </Card>
+  <Card title="Room API" icon="door-open" href="/client/room">
+    Send and receive messages, listen to state changes, and leave rooms.
+  </Card>
+  <Card title="Authentication" icon="lock" href="/client/auth">
+    Sign in with email/password, anonymous sessions, or OAuth providers.
+  </Card>
+</CardGroup>

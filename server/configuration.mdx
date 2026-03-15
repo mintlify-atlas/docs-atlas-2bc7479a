@@ -1,0 +1,228 @@
+---
+title: "Server Configuration"
+description: "All ServerOptions, environment variables, devMode, presence, driver, transport, and load balancing configuration."
+---
+
+## ServerOptions reference
+
+Pass options when constructing a `Server` directly or via `defineServer()`.
+
+```typescript
+import { defineServer, defineRoom } from "@colyseus/core";
+import { WebSocketTransport } from "@colyseus/ws-transport";
+
+const server = defineServer({
+  rooms: { my_room: defineRoom(MyRoom) },
+  transport: new WebSocketTransport(),
+  publicAddress: "game.example.com",
+  devMode: false,
+  gracefullyShutdown: true,
+  greet: true,
+});
+```
+
+### Network
+
+<ParamField path="publicAddress" type="string">
+  The public hostname or URL of this server process. Required when running
+  multiple Colyseus processes behind a load balancer or reverse proxy. The
+  matchmaker uses this value to build the WebSocket URL that clients connect to
+  for a specific room.
+
+  ```typescript
+  publicAddress: "game.example.com"
+  // or with port
+  publicAddress: "game.example.com:2567"
+  ```
+</ParamField>
+
+### Transport
+
+<ParamField path="transport" type="Transport">
+  The transport layer instance. Defaults to `@colyseus/ws-transport` if not
+  provided and the package is installed. See the [Transport](/server/transport)
+  page for all available options.
+
+  ```typescript
+  import { WebSocketTransport } from "@colyseus/ws-transport";
+  transport: new WebSocketTransport({ pingInterval: 5000 })
+  ```
+</ParamField>
+
+### Presence and Driver
+
+<ParamField path="presence" type="Presence">
+  The presence backend used for pub/sub and shared state across processes.
+  Defaults to `LocalPresence` (single-process). Use `RedisPresence` for
+  multi-process deployments.
+
+  ```typescript
+  import { RedisPresence } from "@colyseus/redis-presence";
+  presence: new RedisPresence(process.env.REDIS_URI)
+  ```
+</ParamField>
+
+<ParamField path="driver" type="MatchMakerDriver">
+  The matchmaking driver used to store room listings. Defaults to `LocalDriver`
+  (in-memory). Use `RedisDriver` for multi-process deployments so all processes
+  share the same room registry.
+
+  ```typescript
+  import { RedisDriver } from "@colyseus/redis-driver";
+  driver: new RedisDriver(process.env.REDIS_URI)
+  ```
+</ParamField>
+
+### Server lifecycle
+
+<ParamField path="gracefullyShutdown" type="boolean" default="true">
+  When `true`, Colyseus registers handlers for `SIGINT`, `SIGTERM`, and
+  `SIGUSR2` to gracefully shut down all rooms and the transport before
+  the process exits. Disable if you manage process lifecycle yourself.
+</ParamField>
+
+<ParamField path="beforeListen" type="() => Promise<void> | void">
+  An async callback executed before the server starts accepting connections.
+  Use this to connect to databases or other services that must be ready before
+  the first client joins.
+
+  ```typescript
+  beforeListen: async () => {
+    await db.connect(process.env.DATABASE_URL);
+  }
+  ```
+</ParamField>
+
+<ParamField path="greet" type="boolean" default="true">
+  Controls whether the Colyseus greeting banner is printed to stdout when the
+  server starts.
+</ParamField>
+
+### Express
+
+<ParamField path="express" type="(app: express.Application) => void">
+  Callback to configure Express routes. When provided, the transport layer
+  creates an Express-compatible app and passes it to this function. For
+  `uWebSockets`, the `uwebsockets-express` adapter is used automatically.
+
+  ```typescript
+  express: (app) => {
+    app.use(express.json());
+    app.get("/health", (req, res) => res.send("OK"));
+  }
+  ```
+</ParamField>
+
+### Matchmaking and load balancing
+
+<ParamField path="selectProcessIdToCreateRoom" type="SelectProcessIdCallback">
+  Custom function to determine which process should handle a new room creation
+  request. By default, Colyseus assigns the process with the fewest rooms.
+
+  ```typescript
+  selectProcessIdToCreateRoom: async (roomName, clientOptions) => {
+    // return the process ID that should create the room
+    return myCustomLoadBalancer.getLeastLoadedProcess(roomName);
+  }
+  ```
+</ParamField>
+
+<ParamField path="isStandaloneMatchMaker" type="boolean" default="false">
+  When `true`, this process acts as a dedicated matchmaker only — it will not
+  spawn or host any room instances. Use this when separating matchmaking from
+  game logic in large-scale deployments.
+</ParamField>
+
+### Development
+
+<ParamField path="devMode" type="boolean" default="false">
+  When enabled, room state is persisted on graceful shutdown and restored when
+  the server restarts. Clients reconnect automatically when the server reboots
+  during development.
+
+  See also `onCacheRoom()` and `onRestoreRoom()` on the `Room` class for
+  customizing what gets persisted.
+
+  <Warning>
+    `devMode` is expensive — it serializes all room state on every restart.
+    Do not enable it in production.
+  </Warning>
+</ParamField>
+
+### Logger
+
+<ParamField path="logger" type="any">
+  A custom logger instance. Colyseus uses a lightweight internal logger by
+  default. Provide any logger with `info`, `warn`, `error`, and `debug` methods
+  (e.g. `pino`, `winston`).
+
+  ```typescript
+  import pino from "pino";
+  logger: pino({ level: "info" })
+  ```
+</ParamField>
+
+---
+
+## Environment variables
+
+<ParamField path="PORT" type="number" default="2567">
+  The port the server listens on. Read by `@colyseus/tools` `listen()`. When
+  using `NODE_APP_INSTANCE`, each process automatically uses
+  `PORT + NODE_APP_INSTANCE`.
+
+  ```bash
+  PORT=3000 node server.js
+  ```
+</ParamField>
+
+<ParamField path="COLYSEUS_SEAT_RESERVATION_TIME" type="number" default="15">
+  Global default for how many seconds a reserved seat is held while a client
+  completes the join handshake (including `onAuth()`). Override per-room by
+  setting `this.seatReservationTimeout` inside the room.
+
+  ```bash
+  COLYSEUS_SEAT_RESERVATION_TIME=30
+  ```
+</ParamField>
+
+<ParamField path="COLYSEUS_CLOUD" type="string">
+  Set automatically when deploying on Colyseus Cloud. When present, `listen()`
+  delegates to `@colyseus/tools` internals which bind on a Unix socket path
+  and configure Redis driver/presence if multiple CPU cores are detected.
+</ParamField>
+
+<ParamField path="NODE_APP_INSTANCE" type="number" default="0">
+  Process index used by PM2 or similar process managers. `@colyseus/tools`
+  `listen()` adds this value to the base `PORT` so each process listens on a
+  unique port (`2567`, `2568`, `2569`, …).
+</ParamField>
+
+---
+
+## Multi-process example
+
+```typescript
+import { listen } from "@colyseus/tools";
+import { defineRoom } from "@colyseus/core";
+import { RedisPresence } from "@colyseus/redis-presence";
+import { RedisDriver } from "@colyseus/redis-driver";
+import { GameRoom } from "./rooms/GameRoom";
+
+listen({
+  rooms: {
+    game: defineRoom(GameRoom),
+  },
+  options: {
+    presence: new RedisPresence(process.env.REDIS_URI),
+    driver: new RedisDriver(process.env.REDIS_URI),
+    publicAddress: process.env.PUBLIC_ADDRESS,
+  },
+});
+```
+
+Run with PM2 cluster mode:
+
+```bash
+pm2 start server.js -i max
+```

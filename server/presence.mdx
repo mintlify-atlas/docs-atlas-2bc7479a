@@ -1,0 +1,246 @@
+---
+title: "Presence API"
+description: "Share state and messages across server processes with LocalPresence and RedisPresence."
+---
+
+Presence provides pub/sub messaging and shared key-value storage across server processes. Colyseus
+uses it internally to coordinate matchmaking when rooms are distributed across multiple processes or
+machines. You can also use the `Presence` API directly inside rooms for custom cross-process
+communication.
+
+Access it inside a room via `this.presence`:
+
+```typescript
+import { Room } from "@colyseus/core";
+
+export class MyRoom extends Room {
+  async onCreate(options: any) {
+    // Subscribe to a shared channel
+    await this.presence.subscribe("global:announcements", (message) => {
+      this.broadcast("announcement", message);
+    });
+  }
+
+  async onDispose() {
+    this.presence.unsubscribe("global:announcements");
+  }
+}
+```
+
+<Note>
+  Subscriptions created through `this.presence` inside a room are automatically cleaned up when the
+  room is disposed. You do not need to call `unsubscribe()` manually in `onDispose()` for those
+  subscriptions.
+</Note>
+
+## Implementations
+
+<Tabs>
+  <Tab title="LocalPresence (default)">
+    `LocalPresence` is the default. It stores all state in memory within the current process. Use it
+    when you are running a single Colyseus process.
+
+    ```typescript
+    import { defineServer } from "@colyseus/core";
+    import { LocalPresence } from "@colyseus/core";
+
+    const server = defineServer({
+      // LocalPresence is used automatically when no presence is specified
+      presence: new LocalPresence(),
+    });
+    ```
+  </Tab>
+  <Tab title="RedisPresence (multi-process)">
+    `RedisPresence` uses Redis pub/sub and key storage. Required when running Colyseus on multiple
+    processes or servers.
+
+    ```bash
+    npm install @colyseus/redis-presence
+    ```
+
+    ```typescript
+    import { defineServer } from "@colyseus/core";
+    import { RedisPresence } from "@colyseus/redis-presence";
+
+    const server = defineServer({
+      presence: new RedisPresence(process.env.REDIS_URI),
+    });
+    ```
+
+    `RedisPresence` internally creates two `ioredis` connections: one for subscriptions (`sub`) and
+    one for all other commands (`pub`).
+  </Tab>
+</Tabs>
+
+## Redis Cluster support
+
+Pass an array of cluster nodes to use Redis in cluster mode:
+
+```typescript
+import { RedisPresence } from "@colyseus/redis-presence";
+
+const presence = new RedisPresence(
+  [
+    { host: "redis-node-1", port: 6379 },
+    { host: "redis-node-2", port: 6379 },
+  ],
+  { redisOptions: { password: "secret" } }
+);
+```
+
+## Pub/sub methods
+
+### `subscribe(topic, callback)`
+
+Subscribes to a topic. The callback is invoked with the published message whenever something
+publishes to that topic.
+
+```typescript
+await this.presence.subscribe("match:ready", (data) => {
+  console.log("Match is ready:", data);
+});
+```
+
+<ParamField path="topic" type="string" required>
+  The channel name to subscribe to.
+</ParamField>
+<ParamField path="callback" type="Function" required>
+  Called with the deserialized message payload.
+</ParamField>
+
+---
+
+### `unsubscribe(topic, callback?)`
+
+Removes a subscription. If `callback` is omitted, all listeners for the topic are removed.
+
+```typescript
+this.presence.unsubscribe("match:ready", myHandler);
+```
+
+---
+
+### `publish(topic, data)`
+
+Publishes a message to all subscribers of the topic across all processes.
+
+```typescript
+this.presence.publish("match:ready", { roomId: this.roomId, map: "desert" });
+```
+
+## Key-value methods
+
+### `set(key, value)` / `get(key)`
+
+Stores and retrieves a string value.
+
+```typescript
+this.presence.set("server:motd", "Welcome to the game!");
+const motd = await this.presence.get("server:motd");
+```
+
+---
+
+### `setex(key, value, seconds)`
+
+Stores a value that expires after the given number of seconds.
+
+```typescript
+// Store a temporary lock for 30 seconds
+this.presence.setex("lock:" + this.roomId, "1", 30);
+```
+
+---
+
+### `expire(key, seconds)`
+
+Sets a TTL on an existing key.
+
+```typescript
+this.presence.expire("session:" + sessionId, 3600);
+```
+
+---
+
+### `del(key)`
+
+Deletes a key and any associated set or hash data.
+
+```typescript
+this.presence.del("lock:" + this.roomId);
+```
+
+---
+
+### `exists(key)`
+
+Returns `true` if the key exists.
+
+```typescript
+const locked = await this.presence.exists("lock:" + this.roomId);
+```
+
+---
+
+### `incr(key)` / `decr(key)`
+
+Atomically increments or decrements an integer counter.
+
+```typescript
+const totalPlayers = await this.presence.incr("stats:players");
+```
+
+## Hash methods
+
+### `hset(key, field, value)` / `hget(key, field)` / `hgetall(key)` / `hdel(key, field)`
+
+Operations on hash maps (Redis `HSET` / `HGET` / `HGETALL` / `HDEL`).
+
+```typescript
+await this.presence.hset("room:metadata", "map", "forest");
+const map = await this.presence.hget("room:metadata", "map");
+const all = await this.presence.hgetall("room:metadata");
+await this.presence.hdel("room:metadata", "map");
+```
+
+### `hincrby(key, field, value)`
+
+Increments a hash field by the given amount.
+
+```typescript
+await this.presence.hincrby("process:stats", this.processId, 1);
+```
+
+## Set methods
+
+### `sadd(key, value)` / `smembers(key)` / `srem(key, value)` / `scard(key)`
+
+Operations on sets (Redis `SADD` / `SMEMBERS` / `SREM` / `SCARD`).
+
+```typescript
+await this.presence.sadd("active:rooms", this.roomId);
+const rooms = await this.presence.smembers("active:rooms");
+const count = await this.presence.scard("active:rooms");
+await this.presence.srem("active:rooms", this.roomId);
+```
+
+## List methods
+
+Presence also exposes Redis-style list operations: `rpush`, `lpush`, `rpop`, `lpop`, `llen`, and
+`brpop`. These are useful for implementing work queues across processes.
+
+```typescript
+await this.presence.rpush("queue:tasks", JSON.stringify({ task: "send_email", userId }));
+const item = await this.presence.brpop("queue:tasks", 5); // blocks up to 5 seconds
+```
+
+## Internal usage
+
+Colyseus uses presence internally for:
+
+- **IPC between processes** — room creation requests and health-checks are routed through presence
+  channels keyed by `processId`.
+- **Room-to-room messaging** — `remoteRoomCall()` requests travel through presence pub/sub.
+- **Stats aggregation** — `matchMaker.stats.fetchAll()` reads from a shared hash stored in presence.
+- **Concurrent room creation locking** — prevents duplicate rooms when multiple clients hit
+  `joinOrCreate()` at the same time.

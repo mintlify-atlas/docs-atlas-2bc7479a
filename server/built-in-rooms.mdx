@@ -1,0 +1,331 @@
+---
+title: "Built-in Rooms"
+description: "Colyseus built-in room implementations: LobbyRoom for room listings, RelayRoom for message relay, and QueueRoom for skill-based matchmaking."
+---
+
+Colyseus ships three ready-to-use room implementations for common patterns. Import them from `@colyseus/core`.
+
+<CardGroup cols={2}>
+  <Card title="LobbyRoom" icon="list">
+    Subscribes to available rooms and broadcasts the live listing to connected clients.
+  </Card>
+  <Card title="RelayRoom" icon="arrows-left-right">
+    Relays all client messages to all other connected clients. No custom logic required.
+  </Card>
+  <Card title="QueueRoom" icon="users">
+    Skill-based matchmaking queue that groups compatible players and creates game rooms.
+  </Card>
+</CardGroup>
+
+---
+
+## LobbyRoom
+
+`LobbyRoom` subscribes to the matchmaker's room listing and pushes live updates to connected clients. Each client receives the current list of rooms on join, then incremental add/remove events as rooms are created or destroyed.
+
+### Registration
+
+```typescript
+import { defineServer, defineRoom } from "@colyseus/core";
+import { LobbyRoom } from "@colyseus/core";
+
+const server = defineServer({
+  rooms: {
+    lobby: defineRoom(LobbyRoom),
+    game: defineRoom(GameRoom),
+  },
+});
+```
+
+### Client-side messages
+
+| Message type | Direction | Payload |
+|---|---|---|
+| `rooms` | server → client | `IRoomCache[]` — full current listing |
+| `+` | server → client | `[roomId, IRoomCache]` — room added or updated |
+| `-` | server → client | `roomId: string` — room removed |
+| `filter` | client → server | `{ name?: string; metadata?: any }` — filter the listing |
+
+On join, the client immediately receives a `rooms` message with the current listing. After that, `+` and `-` events are pushed incrementally.
+
+### Filtering
+
+Clients can send a `filter` message at any time to narrow which rooms they see:
+
+```typescript
+// Client-side
+room.send("filter", { name: "game", metadata: { difficulty: "hard" } });
+```
+
+The filter matches on `name` (exact) and any `metadata` fields (exact value per field). A filtered client only receives `+`/`-` events for rooms that match their active filter.
+
+### Overriding filter logic
+
+Subclass `LobbyRoom` and override `filterItemForClient()` to implement custom filter logic:
+
+```typescript
+import { LobbyRoom, FilterInput } from "@colyseus/core";
+import type { IRoomCache } from "@colyseus/core";
+
+class CustomLobbyRoom extends LobbyRoom {
+  protected filterItemForClient(room: IRoomCache, filter?: FilterInput): boolean {
+    if (!filter) return true;
+
+    // custom: only show rooms with available spots
+    if (room.clients >= room.maxClients) return false;
+
+    // custom: filter by room name prefix
+    if (filter.name && !room.name.startsWith(filter.name)) return false;
+
+    return true;
+  }
+}
+```
+
+<Note>
+  `LobbyRoom` sets `this._listing.unlisted = true` in `onCreate()` so it does
+  not appear in its own listing.
+</Note>
+
+---
+
+## RelayRoom
+
+`RelayRoom` forwards every client message to all other connected clients. It also maintains a `players` state (a `MapSchema` of connected players) using `@colyseus/schema`.
+
+### Registration
+
+```typescript
+import { defineServer, defineRoom } from "@colyseus/core";
+import { RelayRoom } from "@colyseus/core";
+
+const server = defineServer({
+  rooms: {
+    relay: defineRoom(RelayRoom),
+  },
+});
+```
+
+### Join options
+
+<ParamField path="maxClients" type="number">
+  Maximum number of clients. Forwarded to `this.maxClients`.
+</ParamField>
+
+<ParamField path="allowReconnectionTime" type="number">
+  Seconds to hold a seat for a disconnected client. Capped at 40 seconds. When
+  a client disconnects and reconnects within this window, their `Player` entry
+  is marked `connected = false` and then `true` again. If the window expires the
+  player entry is removed.
+</ParamField>
+
+<ParamField path="metadata" type="any">
+  Initial metadata set via `setMetadata()`.
+</ParamField>
+
+```typescript
+// Client-side
+const room = await client.joinOrCreate("relay", {
+  maxClients: 10,
+  allowReconnectionTime: 20,
+  name: "Alice",
+});
+```
+
+### Behavior
+
+When client A sends any message, all other clients receive the same message type with a payload of `[senderSessionId, originalPayload]`:
+
+```typescript
+// Server behavior (built in)
+this.onMessage("*", (client, type, message) => {
+  this.broadcast(type, [client.sessionId, message], { except: client });
+});
+```
+
+So if client A sends `{ "move": { x: 5, y: 10 } }`, all other clients receive:
+
+```typescript
+{ type: "move", payload: ["sessionIdOfA", { x: 5, y: 10 }] }
+```
+
+### State
+
+`RelayRoom.state` is a Schema with a `players` `MapSchema`:
+
+```typescript
+class Player extends Schema {
+  @type("boolean") connected: boolean;
+  @type("string")  name: string;
+  @type("string")  sessionId: string;
+}
+
+class State extends Schema {
+  @type({ map: Player }) players = new MapSchema<Player>();
+}
+```
+
+---
+
+## QueueRoom
+
+`QueueRoom` implements skill-based matchmaking. Clients join the queue, and the room periodically evaluates compatibility groups. When a group reaches the required size, a new game room is created and the clients are redirected.
+
+### Registration
+
+```typescript
+import { defineServer, defineRoom } from "@colyseus/core";
+import { QueueRoom } from "@colyseus/core";
+
+const server = defineServer({
+  rooms: {
+    queue: defineRoom(QueueRoom, {
+      matchRoomName: "game",  // required: the room type to create
+      maxPlayers: 4,          // default: 4
+      maxWaitingCycles: 15,   // default: 15
+    }),
+    game: defineRoom(GameRoom),
+  },
+});
+```
+
+### QueueOptions
+
+<ParamField path="matchRoomName" type="string" required>
+  The room name (key) to create when a match group is ready. Must be registered
+  as a separate room type on the same server. Throws if not provided.
+</ParamField>
+
+<ParamField path="maxPlayers" type="number" default="4">
+  Number of players required to form a match. The group is marked ready when
+  it reaches this size.
+</ParamField>
+
+<ParamField path="maxWaitingCycles" type="number" default="15">
+  Number of evaluation cycles (each 1 second by default) before a group is
+  considered "high priority". Combined with `allowIncompleteGroups: true`, this
+  triggers filling remaining slots with bots.
+</ParamField>
+
+<ParamField path="maxWaitingCyclesForPriority" type="number" default="10">
+  Number of cycles before a client's `highPriority` flag is set to `true`,
+  forcing the client into any compatible group regardless of rank difference.
+</ParamField>
+
+<ParamField path="maxTeamSize" type="number">
+  When set, the queue matches teams of this size rather than individual players.
+  Clients provide a `teamId` option when joining.
+</ParamField>
+
+<ParamField path="allowIncompleteGroups" type="boolean" default="false">
+  When `true`, a group that has been waiting longer than `maxWaitingCycles` is
+  dispatched even if it hasn't reached `maxPlayers`. The game room is responsible
+  for filling remaining spots with bots.
+</ParamField>
+
+<ParamField path="compare" type="(client: QueueClientData, group: QueueMatchGroup) => boolean">
+  Custom function to decide whether a client is compatible with a group. Defaults
+  to a rank-difference comparison: clients are compatible if their rank differs
+  by less than 10 or the ratio difference is ≤2.
+</ParamField>
+
+<ParamField path="onGroupReady" type="(group: QueueMatchGroup) => Promise<IRoomCache>">
+  Override the default room creation behavior. When set, `matchRoomName` is
+  ignored. Return the room cache object to redirect clients.
+</ParamField>
+
+### QueueMatchGroup
+
+```typescript
+interface QueueMatchGroup {
+  averageRank: number;
+  clients: Array<Client<{ userData: QueueClientData }>>;
+  ready?: boolean;
+  confirmed?: number;
+}
+```
+
+### QueueClientData
+
+Set by `onJoin` from the client's join options:
+
+```typescript
+interface QueueClientData {
+  rank: number;             // client's skill rank
+  teamId?: string;          // optional team ID for team matching
+  currentCycle?: number;    // how many evaluation cycles this client has waited
+  highPriority?: boolean;   // true after maxWaitingCyclesForPriority cycles
+  options?: any;            // original join options forwarded to the game room
+  group?: QueueMatchGroup;  // current assigned group
+  confirmed?: boolean;      // whether the client confirmed the seat reservation
+}
+```
+
+### Client-side messages
+
+| Message type | Direction | Payload |
+|---|---|---|
+| `clients` | server → client | `number` — current number of clients in the group |
+| `seat` | server → client | `ISeatReservation` — room/session info to connect to |
+| `confirm` | client → server | (any) — client confirms the seat |
+
+### Client-side usage
+
+```typescript
+// Client joins the queue with a rank
+const queue = await client.joinOrCreate("queue", {
+  rank: 1500,
+});
+
+// Track how many players are in the current group
+queue.onMessage("clients", (count) => {
+  ui.updateQueueSize(count);
+});
+
+// When a match is found, connect to the game room
+queue.onMessage("seat", async (reservation) => {
+  queue.leave();
+  const gameRoom = await client.consumeSeatReservation(reservation);
+  startGame(gameRoom);
+});
+```
+
+### Team matching
+
+When `maxTeamSize` is set, clients must provide a `teamId`:
+
+```typescript
+const queue = await client.joinOrCreate("queue", {
+  rank: 1450,
+  teamId: "team-abc",
+});
+```
+
+Clients with the same `teamId` are grouped together as a team before being matched with other teams.
+
+### Custom onGroupReady
+
+Override room creation by providing `onGroupReady`:
+
+```typescript
+defineRoom(QueueRoom, {
+  matchRoomName: "game",
+  maxPlayers: 4,
+  onGroupReady: async function(group) {
+    // group.clients contains the matched players
+    const avgRank = group.averageRank;
+
+    // create a room with metadata based on the group
+    return matchMaker.createRoom("game", {
+      map: avgRank > 1500 ? "advanced" : "beginner",
+      players: group.clients.map((c) => c.userData),
+    });
+  },
+})
+```
+
+<Note>
+  The `QueueRoom` evaluation cycle runs every 1 second (`cycleTickInterval`).
+  All unmatched clients not yet in a "ready" group are re-evaluated each cycle,
+  which means group composition can change until a group is marked `ready`.
+</Note>

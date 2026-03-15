@@ -1,0 +1,228 @@
+---
+title: "Matchmaking"
+description: "How clients find or create rooms, how seat reservations work, and how to control room access."
+---
+
+Matchmaking is the process by which a client is routed to a room instance. Colyseus provides four client-side methods that cover the most common scenarios, plus a seat reservation mechanism that prevents race conditions during concurrent joins.
+
+## Client-side join methods
+
+All four methods are available on the `Client` instance from `@colyseus/sdk`.
+
+### `joinOrCreate`
+
+The most common method. Finds an existing, unlocked room that matches the criteria, or creates a new one if none is available.
+
+```typescript
+const room = await client.joinOrCreate("game", {
+  difficulty: "hard",
+});
+```
+
+Options are forwarded to `onCreate` (for newly created rooms) and `onJoin` (for all joins). They are also used for **room filtering** — see below.
+
+### `join`
+
+Joins an existing room. Throws an error if no matching room exists. Never creates a new room.
+
+```typescript
+const room = await client.join("game", { difficulty: "hard" });
+```
+
+Useful when clients must join an in-progress session that was already created.
+
+### `create`
+
+Always creates a new room instance. Useful for dedicated-match flows where the host explicitly creates the session.
+
+```typescript
+const room = await client.create("game", { map: "forest" });
+```
+
+### `joinById`
+
+Joins a specific room by its `roomId`. Useful when you share a room code with other players.
+
+```typescript
+const room = await client.joinById("abc123def", { password: "secret" });
+```
+
+Throws if the room does not exist or is locked.
+
+### Reconnection
+
+After an unexpected disconnect, a client can reclaim its previous session using the reconnection token:
+
+```typescript
+// Save the token right after joining
+const savedToken = room.reconnectionToken;
+
+// Later, after the connection dropped:
+const room = await client.reconnect(savedToken);
+```
+
+The server must have called `await this.allowReconnection(client, seconds)` inside `onLeave` to enable this.
+
+## How seat reservations work
+
+Between the HTTP matchmaking request and the WebSocket connection, there is a window where a seat must be held for the client. Colyseus handles this with **seat reservations**.
+
+<Steps>
+  <Step title="Client requests a seat">
+    The client SDK sends an HTTP request to the Colyseus matchmaking endpoint. The matchmaker finds or creates a room and calls `reserveSeatFor(room, options)`.
+  </Step>
+  <Step title="Reservation is stored">
+    A short-lived entry is stored in the room keyed by the client's `sessionId`. The default reservation timeout is **15 seconds**.
+  </Step>
+  <Step title="Client opens WebSocket connection">
+    The client SDK receives the `sessionId` and room address, then immediately upgrades to a WebSocket connection.
+  </Step>
+  <Step title="Client claims the seat">
+    On the first WebSocket frame, the client presents its `sessionId`. If a valid reservation exists, `onJoin` fires and the seat is consumed. If the reservation has expired, the connection is rejected with `MATCHMAKE_EXPIRED`.
+  </Step>
+</Steps>
+
+This two-step process prevents the "double join" problem: two HTTP requests racing to join the same room cannot both succeed, because the seat is reserved atomically.
+
+<Tip>
+Adjust the reservation timeout per-room by setting `this.seatReservationTimeout = 30` inside `onCreate`, or globally with the `COLYSEUS_SEAT_RESERVATION_TIME` environment variable.
+</Tip>
+
+## Room filtering
+
+When searching for an available room, the matchmaker can filter by metadata. You control which client options act as filters by defining `filterBy` on the `RegisteredHandler`:
+
+```typescript
+import config from "@colyseus/tools";
+import { defineRoom } from "@colyseus/core";
+import { GameRoom } from "./rooms/GameRoom";
+
+export const server = config({
+  rooms: {
+    game: defineRoom(GameRoom).filterBy(["difficulty", "map"]),
+  },
+});
+```
+
+With this configuration, when a client calls `joinOrCreate("game", { difficulty: "hard", map: "forest" })`, the matchmaker only considers rooms where both `difficulty` and `map` match. If no such room exists, a new one is created.
+
+Filter options are stored in the room's listing in the driver. They are set when the room is created — subsequent mutations to `this.metadata` do not retroactively change filter behaviour.
+
+## `maxClients` and locking
+
+The `maxClients` property on a `Room` determines how many clients can be inside the room at the same time (connected clients plus currently held seat reservations).
+
+When the limit is reached:
+
+- The room is **locked** automatically.
+- The matchmaker skips locked rooms when searching for available seats.
+- As soon as any client disconnects (freeing a seat), the room is unlocked again, unless you called `this.lock()` explicitly.
+
+```typescript
+onCreate() {
+  this.maxClients = 2; // 1v1 room
+}
+```
+
+You can also lock and unlock manually:
+
+```typescript
+// Lock during a countdown — no new players allowed
+await this.lock();
+
+// Re-open after the match ends
+await this.unlock();
+```
+
+## Controlling room access with `onAuth`
+
+`onAuth` is called before `onJoin` and is the right place to validate the client's identity or check custom access rules:
+
+```typescript
+import { Room, Client, type AuthContext } from "@colyseus/core";
+
+export class GameRoom extends Room {
+  async onAuth(client: Client, options: any, context: AuthContext) {
+    // Validate a custom token
+    const user = await verifyToken(context.token);
+    if (!user) {
+      throw new Error("Unauthorized");
+    }
+
+    // Check a room-level password
+    if (options.password !== this.metadata?.password) {
+      throw new Error("Wrong password");
+    }
+
+    return user; // Stored as client.auth
+  }
+
+  onJoin(client: Client) {
+    console.log("welcome", client.auth.username);
+  }
+}
+```
+
+Throwing any error inside `onAuth` rejects the connection. The client receives the error message and the seat reservation is released.
+
+<Warning>
+Do not use `onJoin` for access control. By the time `onJoin` fires, the seat has already been allocated and the WebSocket connection is open. Throwing in `onJoin` closes the connection abruptly without a clean error message on the client.
+</Warning>
+
+## Room metadata
+
+Metadata is arbitrary data attached to a room's listing in the driver. It is visible to clients through the matchmaker query API and is useful for building lobby UIs.
+
+Set metadata during `onCreate`:
+
+```typescript
+onCreate(options: any) {
+  this.metadata = {
+    difficulty: options.difficulty,
+    hostName: options.playerName,
+  };
+}
+```
+
+Update it later and persist the change:
+
+```typescript
+await this.setMatchmaking({
+  metadata: { ...this.metadata, status: "in_progress" },
+});
+```
+
+Query available rooms from the client:
+
+```typescript
+const rooms = await client.getAvailableRooms("game");
+// rooms[0].metadata.difficulty === "hard"
+```
+
+## Built-in room types
+
+<CardGroup cols={2}>
+  <Card title="LobbyRoom" icon="list">
+    Broadcasts a list of available rooms in real time. Connect clients to a `LobbyRoom` to build a room browser UI without polling.
+  </Card>
+  <Card title="QueueRoom" icon="clock">
+    Queue-based matchmaking. Groups clients into teams based on configurable rules, then creates a new room for each match.
+  </Card>
+</CardGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="building" href="/concepts/architecture">
+    How the matchmaker fits into the broader Colyseus architecture.
+  </Card>
+  <Card title="Rooms" icon="door-open" href="/concepts/rooms">
+    Room lifecycle, `maxClients`, locking, and `onAuth` in depth.
+  </Card>
+  <Card title="Matchmaker API" icon="server" href="/server/matchmaker">
+    Server-side matchmaker methods: `query`, `joinOrCreate`, `create`, and more.
+  </Card>
+  <Card title="Client SDK" icon="code" href="/client/overview">
+    Full reference for all client-side join methods.
+  </Card>
+</CardGroup>

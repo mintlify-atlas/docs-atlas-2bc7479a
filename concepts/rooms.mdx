@@ -1,0 +1,268 @@
+---
+title: "Rooms"
+description: "What a Room is, its full lifecycle, and the properties that control its behavior."
+---
+
+A **Room** is the core building block of a Colyseus server. Each room instance represents an independent game session or communication channel. Rooms are created on demand by the matchmaker and disposed when no longer needed.
+
+You define a room by extending the `Room` class:
+
+```typescript
+import { Room, Client } from "@colyseus/core";
+import { Schema, type } from "@colyseus/schema";
+
+class GameState extends Schema {
+  @type("number") tick: number = 0;
+}
+
+export class GameRoom extends Room<{ state: GameState }> {
+  onCreate(options: any) {
+    this.state = new GameState();
+
+    this.setSimulationInterval((deltaTime) => {
+      this.state.tick++;
+    }, 1000);
+  }
+
+  onJoin(client: Client) {
+    console.log(client.sessionId, "joined");
+  }
+
+  onLeave(client: Client, code: number) {
+    console.log(client.sessionId, "left with code", code);
+  }
+
+  onDispose() {
+    console.log("room", this.roomId, "disposing");
+  }
+}
+```
+
+The generic type parameter `{ state: GameState }` tells TypeScript the shape of `this.state`, `this.clients`, and related types. It is optional but strongly recommended.
+
+## Room lifecycle
+
+```
+onCreate → onAuth → onJoin → [messages / state patches] → onLeave → onDispose
+```
+
+### `onCreate(options)`
+
+Called once when the room is first instantiated. This is where you:
+
+- Set the initial state with `this.state = new MyState()`
+- Register message handlers with `this.onMessage()`
+- Start a simulation loop with `this.setSimulationInterval()`
+- Set room metadata or matchmaking properties
+
+```typescript
+onCreate(options: { difficulty: string }) {
+  this.state = new GameState();
+  this.maxClients = 4;
+
+  this.onMessage("move", (client, data: { x: number; y: number }) => {
+    // handle player movement
+  });
+}
+```
+
+`options` contains any values the client passed when calling `joinOrCreate`, `join`, or `create`.
+
+### `onAuth(client, options, context)`
+
+Called before `onJoin` for every connecting client. Use it to validate credentials or look up a user record. The return value is stored as `client.auth` and passed as the third argument to `onJoin`.
+
+```typescript
+async onAuth(client: Client, options: any, context: AuthContext) {
+  const user = await db.users.findOne({ token: context.token });
+  if (!user) {
+    throw new Error("Unauthorized");
+  }
+  return user; // available as client.auth in onJoin
+}
+```
+
+Throwing (or rejecting a Promise) inside `onAuth` rejects the connection with an error. The client never joins the room.
+
+<Note>
+`context.token` contains the Bearer token from the `Authorization` header when the client is using `@colyseus/auth`. `context.headers` and `context.ip` are always available.
+</Note>
+
+### `onJoin(client, options, auth)`
+
+Called when a client successfully claims a seat reservation and opens a WebSocket connection. Use it to initialize per-player state.
+
+```typescript
+onJoin(client: Client, options: any) {
+  const player = new Player();
+  player.x = Math.floor(Math.random() * 800);
+  player.y = Math.floor(Math.random() * 600);
+  this.state.players.set(client.sessionId, player);
+}
+```
+
+`this.clients` is updated before `onJoin` is called, so the newly connected client is already in the array.
+
+### `onLeave(client, code)`
+
+Called when a client disconnects. `code` is the WebSocket close code (`1000` for a clean close, `1006` for an abnormal disconnect).
+
+You can hold the room open temporarily to allow the client to reconnect:
+
+```typescript
+async onLeave(client: Client, code: number) {
+  // Remove player from state immediately if the leave was voluntary
+  if (code === 1000) {
+    this.state.players.delete(client.sessionId);
+    return;
+  }
+
+  // Allow 30 seconds to reconnect after an abnormal disconnect
+  try {
+    await this.allowReconnection(client, 30);
+    console.log(client.sessionId, "reconnected");
+  } catch {
+    // Reconnection timed out — clean up
+    this.state.players.delete(client.sessionId);
+  }
+}
+```
+
+### `onDispose()`
+
+Called when the room is about to be destroyed. Perform any cleanup here: close database connections, cancel external timers, flush logs, etc.
+
+```typescript
+async onDispose() {
+  await saveGameResult(this.roomId, this.state);
+}
+```
+
+<Warning>
+Do not call `this.broadcast()` or send messages to clients inside `onDispose`. All clients have already disconnected by this point.
+</Warning>
+
+## Room properties
+
+### `maxClients`
+
+The maximum number of clients allowed in the room. When this limit is reached the room is locked automatically, preventing new joins. It unlocks again if a client leaves (unless you locked the room explicitly with `this.lock()`).
+
+```typescript
+onCreate(options: any) {
+  this.maxClients = 4; // 4-player room
+}
+```
+
+Default: `Infinity`.
+
+### `patchRate`
+
+How often (in milliseconds) the server broadcasts the current state delta to all clients. The default is `50` ms (20 patches per second). Lower values mean more frequent updates but higher bandwidth.
+
+```typescript
+onCreate(options: any) {
+  this.patchRate = 100; // 10 patches per second
+}
+```
+
+Set to `null` or `0` to disable automatic patching and call `this.broadcastPatch()` manually.
+
+### `autoDispose`
+
+When `true` (the default), the room is disposed automatically when the last client disconnects. Set it to `false` to keep the room alive permanently — for example, a persistent world room that should never disappear.
+
+```typescript
+onCreate(options: any) {
+  this.autoDispose = false;
+}
+```
+
+### `locked`
+
+Read-only. `true` when the room is locked (either because `maxClients` was reached or because you called `this.lock()`). Use `await this.lock()` and `await this.unlock()` to control this manually.
+
+### `seatReservationTimeout`
+
+Seconds a client has to open a WebSocket connection after receiving a seat reservation. If the client does not connect in time, the seat is released. Default: `15` seconds (overridable globally with the `COLYSEUS_SEAT_RESERVATION_TIME` environment variable).
+
+## State management
+
+Assign a Schema instance to `this.state` to enable automatic synchronization:
+
+```typescript
+import { Schema, type } from "@colyseus/schema";
+
+class GameState extends Schema {
+  @type("number") score: number = 0;
+}
+
+export class GameRoom extends Room<{ state: GameState }> {
+  onCreate() {
+    this.state = new GameState();
+  }
+}
+```
+
+After assignment, every mutation to `this.state` (or any nested Schema object) is tracked. At each patch interval the room computes a binary delta and broadcasts it to all connected clients.
+
+See [State sync](/concepts/state-sync) for a deeper explanation of how delta compression works.
+
+## Broadcasting
+
+Send a message to every connected client:
+
+```typescript
+this.broadcast("game-over", { winner: client.sessionId });
+```
+
+Exclude one or more clients:
+
+```typescript
+this.broadcast("player-moved", { x: 10, y: 20 }, { except: client });
+```
+
+Defer a broadcast until after the next state patch (useful when you want the state and the message to arrive together):
+
+```typescript
+this.broadcast("round-started", {}, { afterNextPatch: true });
+```
+
+## Simulation interval
+
+For game rooms that need a fixed-tick game loop, use `setSimulationInterval`:
+
+```typescript
+onCreate() {
+  this.state = new GameState();
+
+  this.setSimulationInterval((deltaTime) => {
+    // Physics, AI, game logic — runs at 60 fps by default
+    this.applyPhysics(deltaTime);
+  }, 1000 / 60); // 60 fps
+}
+```
+
+The default interval is `1000 / 60` ms (60 fps). The callback receives `deltaTime` in milliseconds since the last tick. The room's `clock` is ticked automatically on each iteration.
+
+## Room ID and name
+
+- `this.roomId` — A unique 9-character identifier generated by the matchmaker. You may override it during `onCreate()` (e.g., to use a human-readable lobby code).
+- `this.roomName` — The name the room type was registered under (e.g., `"game"`). Read-only after creation.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="State sync" icon="arrows-rotate" href="/concepts/state-sync">
+    Understand how Schema deltas are computed and sent to clients.
+  </Card>
+  <Card title="Client-server communication" icon="message" href="/concepts/client-server">
+    Sending and receiving messages between clients and the room.
+  </Card>
+  <Card title="Matchmaking" icon="users" href="/concepts/matchmaking">
+    How clients find and join rooms.
+  </Card>
+  <Card title="Room API reference" icon="server" href="/server/room">
+    Complete reference for all room methods and properties.
+  </Card>
+</CardGroup>

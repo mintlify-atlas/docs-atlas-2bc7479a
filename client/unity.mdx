@@ -1,0 +1,142 @@
+---
+title: "Unity"
+description: "Install and use the Colyseus Unity SDK to connect your Unity game to a Colyseus server."
+---
+
+## Installation
+
+<Steps>
+  <Step title="Download the Unity package">
+    Download the latest `Colyseus_Plugin.unitypackage` from GitHub:
+
+    [Download Colyseus\_Plugin.unitypackage](https://github.com/colyseus/colyseus-unity3d/releases/latest/download/Colyseus_Plugin.unitypackage)
+  </Step>
+
+  <Step title="Import into your project">
+    In Unity, go to **Assets → Import Package → Custom Package** and select the downloaded file. Import all assets.
+  </Step>
+
+  <Step title="Verify the import">
+    After import, the `Colyseus` namespace should be available in your scripts. You can verify by creating a C# script that references `Colyseus.ColyseusClient`.
+  </Step>
+</Steps>
+
+## Connecting to a room
+
+The Unity SDK mirrors the JavaScript API. Create a `ColyseusClient`, then call `JoinOrCreateAsync` to enter a room.
+
+```csharp
+using Colyseus;
+using System.Collections;
+using UnityEngine;
+
+public class NetworkManager : MonoBehaviour
+{
+    private ColyseusClient client;
+    private ColyseusRoom<GameState> room;
+
+    async void Start()
+    {
+        // Create client
+        client = new ColyseusClient("ws://localhost:2567");
+
+        // Join or create a room
+        room = await client.JoinOrCreate<GameState>("game");
+
+        Debug.Log("Joined room: " + room.RoomId);
+        Debug.Log("Session ID: " + room.SessionId);
+    }
+}
+```
+
+## Sending and receiving messages
+
+```csharp
+// Send a message to the server
+await room.Send("move", new { direction = "up" });
+
+// Listen for messages from the server
+room.OnMessage<ChatMessage>("chat", (message) => {
+    Debug.Log("Chat: " + message.text);
+});
+```
+
+## Listening to room events
+
+```csharp
+// State change
+room.OnStateChange += (GameState state, bool isFirstState) => {
+    if (isFirstState) {
+        Debug.Log("Initial state received");
+    }
+    RenderGameState(state);
+};
+
+// Error
+room.OnError += (int code, string message) => {
+    Debug.LogError($"Room error {code}: {message}");
+};
+
+// Leave
+room.OnLeave += (int code) => {
+    Debug.Log("Left room with code: " + code);
+};
+```
+
+## State synchronization
+
+The Unity SDK uses the same `@colyseus/schema` binary serialization as the JavaScript SDK. Define your state schema on the server in TypeScript, then generate the corresponding C# classes using the schema codegen tool:
+
+```bash
+npx @colyseus/schema-codegen path/to/MyState.ts --output ./Assets/Scripts/State --language csharp
+```
+
+This generates strongly-typed C# classes that match your server state. Use them as the generic type parameter when joining rooms:
+
+```csharp
+var room = await client.JoinOrCreate<MyState>("game");
+```
+
+Listen to individual field changes using the generated `OnChange` callbacks:
+
+```csharp
+room.State.players.OnAdd((Player player, string sessionId) => {
+    Debug.Log("Player added: " + sessionId);
+
+    player.position.OnChange(() => {
+        UpdatePlayerPosition(sessionId, player.position.x, player.position.y);
+    });
+});
+
+room.State.players.OnRemove((Player player, string sessionId) => {
+    Debug.Log("Player removed: " + sessionId);
+    RemovePlayerObject(sessionId);
+});
+```
+
+## Leaving a room
+
+```csharp
+await room.Leave();
+```
+
+Pass `false` to close immediately without a graceful handshake:
+
+```csharp
+await room.Leave(false);
+```
+
+## Reconnection
+
+Store the `ReconnectionToken` before disconnecting and use it with `Reconnect`:
+
+```csharp
+string token = room.ReconnectionToken;
+
+// ... later
+room = await client.Reconnect<GameState>(token);
+```
+
+<Tip>
+The Unity SDK source code and additional examples are available at [github.com/colyseus/colyseus-unity3d](https://github.com/colyseus/colyseus-unity3d).
+</Tip>

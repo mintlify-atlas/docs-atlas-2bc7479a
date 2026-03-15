@@ -1,0 +1,242 @@
+---
+title: "Quickstart"
+description: "Create a Colyseus server, define a room with synchronized state, and connect to it from a JavaScript client."
+---
+
+This guide walks you through building a minimal multiplayer application: a server-side room that tracks a shared counter, and a client that increments it and listens for updates.
+
+<Steps>
+  <Step title="Create a new project">
+    Run the project generator and follow the prompts:
+
+    ```bash
+    npm create colyseus-app@latest ./my-game
+    cd my-game
+    ```
+
+    The generator installs all dependencies and creates the following structure:
+
+    ```
+    my-game/
+    ├── src/
+    │   ├── app.config.ts
+    │   └── rooms/
+    │       └── MyRoom.ts
+    ├── package.json
+    └── tsconfig.json
+    ```
+
+    <Tip>
+    If you prefer to install manually, see the [Installation](/getting-started/installation) page.
+    </Tip>
+  </Step>
+
+  <Step title="Define a room with state">
+    Open (or create) `src/rooms/MyRoom.ts` and replace its contents with the following:
+
+    ```typescript
+    import { Room, Client } from "@colyseus/core";
+    import { Schema, type } from "@colyseus/schema";
+
+    class GameState extends Schema {
+      @type("number") count: number = 0;
+    }
+
+    export class GameRoom extends Room<{ state: GameState }> {
+      onCreate(options: any) {
+        this.setState(new GameState());
+
+        this.onMessage("increment", (client, message) => {
+          this.state.count++;
+        });
+      }
+
+      onJoin(client: Client) {
+        console.log(client.sessionId, "joined!");
+      }
+
+      onLeave(client: Client) {
+        console.log(client.sessionId, "left!");
+      }
+    }
+    ```
+
+    What this does:
+
+    - `GameState` extends `Schema` and declares a single field `count`. The `@type("number")` decorator marks it for synchronization.
+    - `onCreate` is called once when the room is created. `setState` registers the state object so Colyseus can track and broadcast changes.
+    - `onMessage("increment", ...)` registers a handler for messages of type `"increment"`. Every time the server receives this message from any client, `count` is incremented and the updated value is automatically patched to all connected clients.
+    - `onJoin` and `onLeave` fire when clients connect and disconnect.
+
+    <Note>
+    You can also use the newer functional `schema()` API instead of decorators. See the [State Schema](/state/overview) docs for both styles.
+    </Note>
+  </Step>
+
+  <Step title="Register the room and start the server">
+    Open `src/app.config.ts` and register your room:
+
+    ```typescript
+    import config, { listen } from "@colyseus/tools";
+    import { defineRoom } from "@colyseus/core";
+    import { GameRoom } from "./rooms/MyRoom.ts";
+
+    export const server = config({
+      rooms: {
+        game_room: defineRoom(GameRoom),
+      },
+    });
+
+    listen(server);
+    ```
+
+    The string `"game_room"` is the public identifier clients use to join. `defineRoom()` registers the class with the matchmaker.
+
+    Start the server:
+
+    ```bash
+    npm start
+    ```
+
+    You should see output like:
+
+    ```
+    ⚔️  Listening on http://localhost:2567
+    ```
+
+    <Tip>
+    The default port is `2567`. Set the `PORT` environment variable to use a different port:
+    `PORT=3000 npm start`
+    </Tip>
+  </Step>
+
+  <Step title="Connect from the client">
+    Install the JavaScript/TypeScript client SDK in your client project:
+
+    <CodeGroup>
+
+    ```bash npm
+    npm install @colyseus/sdk
+    ```
+
+    ```bash yarn
+    yarn add @colyseus/sdk
+    ```
+
+    ```bash pnpm
+    pnpm add @colyseus/sdk
+    ```
+
+    </CodeGroup>
+
+    Then connect to the server and interact with the room:
+
+    ```typescript
+    import { Client } from "@colyseus/sdk";
+
+    async function main() {
+      const client = new Client("ws://localhost:2567");
+
+      // Join or create a room named "game_room"
+      const room = await client.joinOrCreate("game_room");
+
+      // Listen for changes to the `count` field
+      room.state.listen("count", (newValue, previousValue) => {
+        console.log(`count changed: ${previousValue} → ${newValue}`);
+      });
+
+      // Send a message to increment the counter
+      room.send("increment");
+    }
+
+    main();
+    ```
+
+    `joinOrCreate` finds an existing `game_room` with available seats, or creates a new one if none exists. The `room.state.listen` callback fires every time the `count` field changes on the server.
+
+    <Note>
+    The `Client` constructor accepts either a WebSocket URL string or an `EndpointSettings` object with `hostname`, `port`, and `secure` fields. In a browser, omitting the argument defaults to the current page's host.
+    </Note>
+  </Step>
+
+  <Step title="Verify it works">
+    With the server running, open two browser tabs (or run two client scripts). Each time one client calls `room.send("increment")`, the `count` value increments on the server and the updated number is logged in all connected clients.
+
+    You can also open the built-in playground at `http://localhost:2567` (if you included it during scaffolding) to inspect rooms and send test messages from your browser.
+  </Step>
+</Steps>
+
+## What happens under the hood
+
+When a client calls `joinOrCreate("game_room")`:
+
+1. The client sends a matchmaking HTTP request to the server.
+2. The matchmaker checks for an existing `game_room` with available seats.
+3. If one exists, the client is assigned a seat reservation. If not, the server instantiates a new `GameRoom` and calls `onCreate`.
+4. The client upgrades to a WebSocket connection and `onJoin` fires.
+5. The server sends the full current state to the newly joined client.
+6. From that point on, every state mutation is sent as a binary delta patch at 20 patches per second (the default patch rate).
+
+## Extending the example
+
+Here is how to track individual player positions — a common starting point for real games:
+
+```typescript
+import { Room, Client } from "@colyseus/core";
+import { schema, type SchemaType, MapSchema } from "@colyseus/schema";
+
+const Player = schema({
+  x: "number",
+  y: "number",
+});
+type Player = SchemaType<typeof Player>;
+
+const GameState = schema({
+  players: { map: Player },
+});
+type GameState = SchemaType<typeof GameState>;
+
+export class GameRoom extends Room<{ state: typeof GameState }> {
+  state = new GameState();
+
+  onCreate(options: any) {
+    this.onMessage("move", (client, message: { x: number; y: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (player) {
+        player.x = message.x;
+        player.y = message.y;
+      }
+    });
+  }
+
+  onJoin(client: Client) {
+    const player = new Player();
+    player.x = Math.random() * 800;
+    player.y = Math.random() * 600;
+    this.state.players.set(client.sessionId, player);
+  }
+
+  onLeave(client: Client) {
+    this.state.players.delete(client.sessionId);
+  }
+}
+```
+
+This pattern — using a `MapSchema` keyed by `client.sessionId` — is the standard way to track per-player state in Colyseus. The client can listen for players being added, changed, or removed using the `@colyseus/schema` callbacks API.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Core concepts" icon="book" href="/concepts/architecture">
+    Understand the room lifecycle, state sync model, and matchmaking flow in depth.
+  </Card>
+  <Card title="Room API" icon="server" href="/server/room">
+    Explore all room lifecycle methods, properties, and built-in utilities.
+  </Card>
+  <Card title="State schema" icon="database" href="/state/overview">
+    Learn how to define synchronized state with collections, filters, and callbacks.
+  </Card>
+  <Card title="Client SDK" icon="code" href="/client/overview">
+    Full reference for `joinOrCreate`, `room.state`, `room.send`, error handling, and reconnection.
+  </Card>
+</CardGroup>

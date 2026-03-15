@@ -1,0 +1,334 @@
+---
+title: "Collections"
+description: "MapSchema, ArraySchema, SetSchema, and CollectionSchema: synchronized collection types for Colyseus state."
+---
+
+`@colyseus/schema` provides four collection types for storing multiple synchronized values. Each has a different access pattern and performance profile. Choose the right one for your use case.
+
+## Comparison at a glance
+
+| Collection | Keys | Order guaranteed | Unique values | Best for |
+|---|---|---|---|---|
+| `MapSchema<T>` | String | No | No | Players, entities by ID |
+| `ArraySchema<T>` | Numeric index | Yes | No | Ordered lists, leaderboards |
+| `SetSchema<T>` | — | No | Yes | Flags, active status sets |
+| `CollectionSchema<T>` | Auto-incremented integer | No | No | Append-only entity pools |
+
+---
+
+## MapSchema
+
+`MapSchema<T>` is a key-value map where keys are strings. It is the most commonly used collection — the typical use case is mapping a `sessionId` to a player object.
+
+### Server-side usage
+
+```typescript
+import { Schema, type, MapSchema } from "@colyseus/schema";
+
+class Player extends Schema {
+  @type("string")  name: string = "";
+  @type("float32") x: number = 0;
+  @type("float32") y: number = 0;
+}
+
+class GameState extends Schema {
+  @type({ map: Player }) players = new MapSchema<Player>();
+}
+```
+
+```typescript
+// Inside your room:
+const player = new Player();
+player.name = "Alice";
+
+// Set an entry
+this.state.players.set(client.sessionId, player);
+
+// Read an entry
+const p = this.state.players.get(client.sessionId);
+
+// Delete an entry
+this.state.players.delete(client.sessionId);
+
+// Check existence
+if (this.state.players.has(client.sessionId)) { /* ... */ }
+
+// Count entries
+console.log(this.state.players.size);
+
+// Iterate
+this.state.players.forEach((player, sessionId) => {
+  console.log(sessionId, player.x, player.y);
+});
+
+// Iterate entries
+for (const [sessionId, player] of this.state.players.entries()) {
+  console.log(sessionId, player.name);
+}
+```
+
+### Client-side callbacks
+
+```typescript
+room.state.players.onAdd((player, sessionId) => {
+  console.log("Player added:", sessionId);
+
+  // Track this player's position
+  player.listen("x", (x) => updatePosition(sessionId, x, player.y));
+  player.listen("y", (y) => updatePosition(sessionId, player.x, y));
+});
+
+room.state.players.onRemove((player, sessionId) => {
+  console.log("Player removed:", sessionId);
+  destroySprite(sessionId);
+});
+
+room.state.players.onChange((player, sessionId) => {
+  // Fires when any field on an existing player changes
+  console.log("Player updated:", sessionId);
+});
+```
+
+<Note>
+  `onAdd` fires once for every item that exists in the initial state when the client first joins, in addition to firing for items added later. You do not need special handling for the initial population.
+</Note>
+
+---
+
+## ArraySchema
+
+`ArraySchema<T>` is an ordered list with numeric indices. Use it when the order of items matters — leaderboards, turn queues, chat logs.
+
+### Server-side usage
+
+```typescript
+import { Schema, type, ArraySchema } from "@colyseus/schema";
+
+class GameState extends Schema {
+  @type(["string"]) chatLog = new ArraySchema<string>();
+  @type([Player])   spectators = new ArraySchema<Player>();
+}
+```
+
+```typescript
+// Push to the end
+this.state.chatLog.push("Alice joined");
+
+// Pop from the end
+const last = this.state.chatLog.pop();
+
+// Remove from the front
+const first = this.state.chatLog.shift();
+
+// Insert at the front
+this.state.chatLog.unshift("Server: game starting");
+
+// Splice (remove 1 element at index 2, insert "replacement")
+this.state.chatLog.splice(2, 1, "replacement");
+
+// Sort (sorts in place)
+this.state.spectators.sort((a, b) => a.name.localeCompare(b.name));
+
+// Length
+console.log(this.state.chatLog.length);
+
+// Index access
+const firstMessage = this.state.chatLog[0];
+```
+
+### Client-side callbacks
+
+```typescript
+room.state.chatLog.onAdd((message, index) => {
+  console.log(`[${index}]`, message);
+  ui.appendChatMessage(message);
+});
+
+room.state.chatLog.onRemove((message, index) => {
+  console.log("Message removed at index:", index);
+});
+
+room.state.spectators.onChange((player, index) => {
+  console.log("Spectator at index", index, "updated:", player.name);
+});
+```
+
+<Warning>
+  `ArraySchema` callbacks use numeric indices as keys, not string IDs. If you need to look up a player by `sessionId` after receiving an `onAdd`, maintain your own `Map<string, Player>` on the client side keyed by a field on the object.
+</Warning>
+
+---
+
+## SetSchema
+
+`SetSchema<T>` stores a collection of unique values. Adding a value that already exists is a no-op. Use it for flags, active power-ups, or any "is this thing present?" scenario.
+
+### Server-side usage
+
+```typescript
+import { Schema, type, SetSchema } from "@colyseus/schema";
+
+class Player extends Schema {
+  @type("string")         name: string = "";
+  @type({ set: "string" }) activePowerUps = new SetSchema<string>();
+}
+```
+
+```typescript
+// Add a value (duplicates are ignored)
+player.activePowerUps.add("shield");
+player.activePowerUps.add("speed");
+player.activePowerUps.add("shield"); // no-op
+
+// Remove a value
+player.activePowerUps.delete("shield");
+
+// Check membership
+if (player.activePowerUps.has("speed")) { /* ... */ }
+
+// Count
+console.log(player.activePowerUps.size);
+
+// Iterate
+player.activePowerUps.forEach((powerUp) => {
+  console.log(powerUp);
+});
+```
+
+### Client-side callbacks
+
+```typescript
+room.state.players.onAdd((player, sessionId) => {
+  player.activePowerUps.onAdd((powerUp) => {
+    console.log(sessionId, "gained power-up:", powerUp);
+    ui.addPowerUpIcon(sessionId, powerUp);
+  });
+
+  player.activePowerUps.onRemove((powerUp) => {
+    console.log(sessionId, "lost power-up:", powerUp);
+    ui.removePowerUpIcon(sessionId, powerUp);
+  });
+});
+```
+
+---
+
+## CollectionSchema
+
+`CollectionSchema<T>` works like an append-only bag with auto-incremented numeric keys. You add items by calling `.add()` and remove them by passing the item reference (not an index or key). Use it for bullet pools, particle emitters, or any scenario where items are frequently created and destroyed and you do not need stable IDs.
+
+### Server-side usage
+
+```typescript
+import { Schema, type, CollectionSchema } from "@colyseus/schema";
+
+class Bullet extends Schema {
+  @type("float32") x: number = 0;
+  @type("float32") y: number = 0;
+  @type("float32") vx: number = 0;
+  @type("float32") vy: number = 0;
+}
+
+class GameState extends Schema {
+  @type({ collection: Bullet }) bullets = new CollectionSchema<Bullet>();
+}
+```
+
+```typescript
+// Add an item — returns the auto-incremented key
+const bullet = new Bullet();
+bullet.x = player.x;
+bullet.y = player.y;
+bullet.vx = Math.cos(angle) * speed;
+bullet.vy = Math.sin(angle) * speed;
+this.state.bullets.add(bullet);
+
+// Delete by item reference
+this.state.bullets.delete(bullet);
+
+// Count
+console.log(this.state.bullets.size);
+
+// Iterate
+this.state.bullets.forEach((bullet) => {
+  // update physics
+  bullet.x += bullet.vx;
+  bullet.y += bullet.vy;
+});
+```
+
+### Client-side callbacks
+
+```typescript
+room.state.bullets.onAdd((bullet, key) => {
+  const mesh = scene.createBulletMesh(bullet.x, bullet.y);
+
+  bullet.listen("x", (x) => mesh.setX(x));
+  bullet.listen("y", (y) => mesh.setY(y));
+
+  // Store by key so we can destroy it on remove
+  bulletMeshes.set(key, mesh);
+});
+
+room.state.bullets.onRemove((_bullet, key) => {
+  bulletMeshes.get(key)?.destroy();
+  bulletMeshes.delete(key);
+});
+```
+
+---
+
+## Performance considerations
+
+### Prefer `MapSchema` for entity management
+
+`MapSchema` is the best default for entities that live for most of a session (players, NPCs). String keys let you look up by `sessionId` in O(1) without maintaining an auxiliary data structure.
+
+### Batch mutations before the next patch
+
+All changes within a single server tick are coalesced into one patch. You do not need to batch manually — just mutate as many fields as needed and they will go out together on the next `broadcastPatch()`.
+
+### Limit collection size for real-time collections
+
+Every entry added to a collection that the serializer has not seen before requires a full initial encoding for that entry. For high-churn collections (bullets, particles), keep sizes bounded — remove old items before adding new ones:
+
+```typescript
+// Enforce a max of 200 bullets
+if (this.state.bullets.size >= 200) {
+  const oldest = this.state.bullets.values().next().value;
+  this.state.bullets.delete(oldest);
+}
+this.state.bullets.add(newBullet);
+```
+
+### Choose narrow types for collection items
+
+For primitive collections (`ArraySchema<string>`, `SetSchema<string>`), the type annotation is the entire element type — there is no room for per-field optimization. For object collections, use narrow integer types on inner fields:
+
+```typescript
+// 4 bytes per bullet position update instead of 16
+class Bullet extends Schema {
+  @type("float32") x: number = 0;  // 4 bytes
+  @type("float32") y: number = 0;  // 4 bytes
+}
+```
+
+### Avoid mutating collection items during iteration
+
+Mutating items while iterating with `forEach` can produce unexpected behaviour. Collect mutations and apply them after the loop:
+
+```typescript
+// Correct pattern
+const toRemove: Bullet[] = [];
+
+this.state.bullets.forEach((bullet) => {
+  bullet.x += bullet.vx;
+  bullet.y += bullet.vy;
+
+  if (bullet.x < 0 || bullet.x > WORLD_WIDTH) {
+    toRemove.push(bullet);
+  }
+});
+
+toRemove.forEach((b) => this.state.bullets.delete(b));
+```

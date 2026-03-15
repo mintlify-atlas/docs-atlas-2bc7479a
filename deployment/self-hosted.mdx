@@ -1,0 +1,260 @@
+---
+title: "Self-hosted deployment"
+description: "Deploy Colyseus on your own VPS or dedicated server using PM2 for process management, nginx as a reverse proxy, and Docker for containerized deployments."
+---
+
+Self-hosting gives you full control over your infrastructure. This guide covers deploying Colyseus on a Linux server using PM2 for process management and nginx as a WebSocket-capable reverse proxy.
+
+## Requirements
+
+- Node.js 20.x or higher
+- npm or pnpm
+- A Linux server (Ubuntu 22.04 or similar)
+- A domain name pointed at your server's IP (for SSL)
+
+## PM2 process management
+
+PM2 is a production process manager for Node.js. It restarts your server on crash, manages multiple processes, and provides log management.
+
+### Install PM2
+
+```bash
+npm install -g pm2
+```
+
+### Create an ecosystem file
+
+Create `ecosystem.config.cjs` in your project root:
+
+```javascript
+module.exports = {
+  apps: [
+    {
+      name: "colyseus-app",
+      script: "build/app.js",   // path to your compiled server entry point
+      instances: "max",         // one process per CPU core
+      exec_mode: "fork",
+      wait_ready: true,
+      kill_timeout: 1800000,    // 30 minutes — lets active rooms finish
+      max_memory_restart: "512M",
+      merge_logs: true,
+      env: {
+        NODE_ENV: "production",
+        PORT: 2567,
+        REDIS_URI: "redis://127.0.0.1:6379",
+      },
+    },
+  ],
+};
+```
+
+<Note>
+  When `instances` is greater than 1, `@colyseus/tools` uses `NODE_APP_INSTANCE` (set by PM2) to assign each process a unique port starting at `PORT`. For example, with `PORT=2567` and 4 instances, the processes listen on `2567`, `2568`, `2569`, and `2570`.
+
+  You must configure `RedisDriver` and `RedisPresence` when running multiple instances — see [Scaling with Redis](/server/scaling/redis).
+</Note>
+
+### Start, reload, and monitor
+
+```bash
+# Build your project first
+npm run build
+
+# Start the application
+pm2 start ecosystem.config.cjs
+
+# List running processes
+pm2 list
+
+# Stream logs
+pm2 logs colyseus-app
+
+# Interactive monitoring dashboard
+pm2 monit
+
+# Reload with zero downtime (sends SIGINT, waits for ready signal)
+pm2 reload colyseus-app
+
+# Save the process list and enable startup on boot
+pm2 save
+pm2 startup
+```
+
+### Sending the ready signal
+
+PM2's `wait_ready: true` holds traffic until your process signals it is ready. `@colyseus/tools` `listen()` sends this signal automatically by calling `process.send('ready')` after the server starts listening:
+
+```typescript
+// @colyseus/tools sends this automatically after server.listen()
+if (typeof process.send === "function") {
+    process.send('ready');
+}
+```
+
+If you manage the server manually, call `process.send('ready')` after your server is fully initialized.
+
+## nginx reverse proxy
+
+nginx sits in front of your Colyseus processes and handles SSL termination, WebSocket upgrades, and load balancing across multiple ports.
+
+### Basic WebSocket proxy
+
+Create `/etc/nginx/sites-available/colyseus`:
+
+```nginx
+upstream colyseus {
+    # Add one entry per process instance
+    server 127.0.0.1:2567;
+    server 127.0.0.1:2568;
+    server 127.0.0.1:2569;
+    server 127.0.0.1:2570;
+}
+
+server {
+    listen 80;
+    server_name game.example.com;
+
+    location / {
+        proxy_pass http://colyseus;
+        proxy_http_version 1.1;
+
+        # WebSocket upgrade headers
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Forward real client IP
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+
+        # Prevent nginx from closing idle WebSocket connections
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+Enable the site and reload nginx:
+
+```bash
+ln -s /etc/nginx/sites-available/colyseus /etc/nginx/sites-enabled/
+nginx -t
+systemctl reload nginx
+```
+
+### SSL with Let's Encrypt
+
+Install Certbot and obtain a certificate:
+
+```bash
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d game.example.com
+```
+
+Certbot modifies your nginx config automatically. The resulting SSL config looks like:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name game.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/game.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/game.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://colyseus;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+
+server {
+    listen 80;
+    server_name game.example.com;
+    return 301 https://$host$request_uri;
+}
+```
+
+## Docker deployment
+
+Docker simplifies dependency management and makes deployments reproducible.
+
+### Dockerfile
+
+```dockerfile
+FROM node:22-alpine
+
+WORKDIR /app
+
+# Install dependencies
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Copy compiled output
+COPY build/ ./build/
+
+EXPOSE 2567
+
+CMD ["node", "build/app.js"]
+```
+
+Build and run:
+
+```bash
+docker build -t colyseus-app .
+docker run -p 2567:2567 -e NODE_ENV=production colyseus-app
+```
+
+### Docker Compose with Redis
+
+For multi-process deployments, use Docker Compose to run your server alongside Redis:
+
+```yaml
+services:
+  colyseus:
+    build: .
+    ports:
+      - "2567:2567"
+    environment:
+      NODE_ENV: production
+      PORT: 2567
+      REDIS_URI: redis://redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
+```
+
+Start all services:
+
+```bash
+docker compose up -d
+```
+
+## Environment variables for production
+
+Set these in your process manager, Dockerfile, or server environment:
+
+```bash
+NODE_ENV=production
+PORT=2567
+REDIS_URI=redis://127.0.0.1:6379
+COLYSEUS_SEAT_RESERVATION_TIME=15
+```
+
+<Warning>
+  Never set `COLYSEUS_CLOUD` in a self-hosted environment. That variable activates Unix socket listening and cloud-specific configuration that requires the Colyseus Cloud infrastructure to function correctly.
+</Warning>

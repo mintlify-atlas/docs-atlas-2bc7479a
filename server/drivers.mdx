@@ -1,0 +1,202 @@
+---
+title: "Driver API"
+description: "Persist and query room listings with LocalDriver, RedisDriver, MongooseDriver, or DrizzleDriver."
+---
+
+A **driver** stores the room listing that Colyseus queries during matchmaking. When a client calls
+`joinOrCreate()`, the matchmaker asks the driver for available rooms. When a room is created or
+disposed, the driver is updated accordingly.
+
+You configure the driver in your server options:
+
+```typescript
+import { defineServer } from "@colyseus/core";
+
+const server = defineServer({
+  driver: new MyDriver(),
+});
+```
+
+## Available drivers
+
+<CardGroup cols={2}>
+  <Card title="LocalDriver" icon="memory">
+    In-memory, single process. The default. No extra dependencies.
+  </Card>
+  <Card title="RedisDriver" icon="database">
+    Redis-backed. Required for multi-process / multi-server deployments.
+  </Card>
+  <Card title="MongooseDriver" icon="leaf">
+    MongoDB-backed via Mongoose. Persistent across restarts.
+  </Card>
+  <Card title="DrizzleDriver" icon="table">
+    PostgreSQL-backed via Drizzle ORM.
+  </Card>
+</CardGroup>
+
+## LocalDriver
+
+`LocalDriver` is used automatically when no driver is specified. It keeps all room data in a plain
+JavaScript array in memory. Because the data is process-local, it cannot be shared with other
+Colyseus processes.
+
+```typescript
+import { defineServer, LocalDriver } from "@colyseus/core";
+
+const server = defineServer({
+  driver: new LocalDriver(), // this is already the default
+});
+```
+
+<Warning>
+  Do not use `LocalDriver` in a multi-process deployment. Rooms created by one process will not be
+  visible to other processes, breaking `joinOrCreate()` matching.
+</Warning>
+
+## RedisDriver
+
+`RedisDriver` stores room listings in a Redis hash (`roomcaches`). All processes share the same
+view of available rooms.
+
+<Steps>
+  <Step title="Install the package">
+    ```bash
+    npm install @colyseus/redis-driver
+    ```
+  </Step>
+  <Step title="Configure the server">
+    ```typescript
+    import { defineServer } from "@colyseus/core";
+    import { RedisDriver } from "@colyseus/redis-driver";
+    import { RedisPresence } from "@colyseus/redis-presence";
+
+    const server = defineServer({
+      driver: new RedisDriver(process.env.REDIS_URI),
+      presence: new RedisPresence(process.env.REDIS_URI),
+    });
+    ```
+  </Step>
+</Steps>
+
+`RedisDriver` accepts the same constructor arguments as `ioredis`:
+
+```typescript
+// Redis URL
+new RedisDriver("redis://:password@host:6379")
+
+// ioredis options object
+new RedisDriver({ host: "my-redis", port: 6379, password: "secret" })
+
+// Redis Cluster
+new RedisDriver(
+  [{ host: "node-1", port: 6379 }, { host: "node-2", port: 6379 }],
+  { redisOptions: { password: "secret" } }
+)
+```
+
+## MongooseDriver
+
+`MongooseDriver` persists room listings to MongoDB using Mongoose. Rooms survive process restarts
+because the data is stored externally.
+
+<Steps>
+  <Step title="Install the package">
+    ```bash
+    npm install @colyseus/mongoose-driver
+    ```
+  </Step>
+  <Step title="Configure the server">
+    ```typescript
+    import { defineServer } from "@colyseus/core";
+    import { MongooseDriver } from "@colyseus/mongoose-driver";
+
+    const server = defineServer({
+      driver: new MongooseDriver(process.env.MONGO_URI),
+    });
+    ```
+
+    If `MONGO_URI` is not provided, it defaults to `mongodb://127.0.0.1:27017/colyseus`.
+  </Step>
+</Steps>
+
+The `MongooseDriver` automatically creates a `RoomCache` collection with indexed fields `name`,
+`locked`, and `roomId`. The schema is:
+
+```typescript
+{
+  clients: Number,        // default: 0
+  locked: Boolean,        // default: false
+  maxClients: Number,     // default: Infinity
+  metadata: Mixed,
+  name: String,
+  private: Boolean,       // default: false
+  publicAddress: String,
+  processId: String,
+  roomId: String,
+  unlisted: Boolean,      // default: false
+}
+```
+
+## DrizzleDriver
+
+`DrizzleDriver` persists room listings to a PostgreSQL database using Drizzle ORM.
+
+<Steps>
+  <Step title="Install the packages">
+    ```bash
+    npm install @colyseus/drizzle-driver drizzle-orm postgres
+    ```
+  </Step>
+  <Step title="Configure the server">
+    ```typescript
+    import { defineServer } from "@colyseus/core";
+    import { DrizzleDriver } from "@colyseus/drizzle-driver";
+
+    const server = defineServer({
+      driver: new DrizzleDriver(process.env.DATABASE_URL),
+    });
+    ```
+  </Step>
+</Steps>
+
+## The `IRoomCache` interface
+
+All drivers work with objects that satisfy `IRoomCache`:
+
+```typescript
+interface IRoomCache<Metadata = any> {
+  name: string;           // room type name
+  roomId: string;         // unique room instance ID
+  processId: string;      // server process hosting this room
+  clients: number;        // current connected clients
+  maxClients: number;     // maximum allowed clients
+  locked?: boolean;       // true when the room rejects new joins
+  private?: boolean;      // excluded from joinOrCreate() / join() matching
+  publicAddress?: string; // address clients connect to
+  unlisted?: boolean;     // hidden from lobby listings
+  metadata?: Metadata;    // custom metadata set in onCreate()
+  createdAt?: Date;
+}
+```
+
+## The `MatchMakerDriver` interface
+
+You can implement your own driver by satisfying the `MatchMakerDriver` interface:
+
+```typescript
+interface MatchMakerDriver {
+  has(roomId: string): Promise<boolean> | boolean;
+  query(conditions: Partial<IRoomCache>, sortOptions?: SortOptions): Promise<IRoomCache[]> | IRoomCache[];
+  findOne(conditions: Partial<IRoomCache>, sortOptions?: SortOptions): Promise<IRoomCache>;
+  update(room: IRoomCache, operations: { $set?: Partial<IRoomCache>; $inc?: Partial<IRoomCache> }): Promise<boolean> | boolean;
+  persist(room: IRoomCache, create?: boolean): Promise<boolean> | boolean;
+  remove(roomId: string): Promise<boolean> | boolean;
+  cleanup?(processId: string): Promise<void>;
+  boot?(): Promise<void>;
+  shutdown(): void;
+  clear(): void;
+}
+```
+
+`SortOptions` maps field names to `1 | -1 | 'asc' | 'desc'`. The built-in sortable fields are
+`clients`, `maxClients`, and `createdAt`.

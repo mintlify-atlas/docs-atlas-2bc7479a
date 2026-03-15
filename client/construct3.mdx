@@ -1,0 +1,131 @@
+---
+title: "Construct 3"
+description: "Install and use the Colyseus addon for Construct 3 to connect your game to a Colyseus server."
+---
+
+## Installation
+
+<Steps>
+  <Step title="Download the addon from the Construct.net store">
+    The Colyseus addon is listed on the Construct.net addon exchange:
+
+    [Colyseus Multiplayer SDK on Construct.net](https://www.construct.net/en/make-games/addons/111/colyseus-multiplayer-sdk)
+
+    Click **Install addon** on the page.
+  </Step>
+
+  <Step title="Enable the addon in your project">
+    Open your Construct 3 project. In the **Project** panel, go to **View → Properties** and confirm the Colyseus addon appears under the addon list.
+
+    Alternatively, open **Project → Properties** and scroll to the **Addons** section.
+  </Step>
+</Steps>
+
+## Adding the Colyseus object
+
+Construct 3 uses a visual, event-based approach to scripting. Add the Colyseus object to your layout:
+
+1. Right-click an empty area in the **Objects** panel.
+2. Select **Add new object type**.
+3. Search for **Colyseus** and double-click to add it.
+
+Once added, a `Colyseus` object instance is available in your event sheets.
+
+## Connecting to a room
+
+All Colyseus actions are available in the **Colyseus** event sheet category. Use the **Actions** panel to add:
+
+| Action | Description |
+|---|---|
+| **Set endpoint** | Set the server URL, for example `ws://localhost:2567`. |
+| **Join or create room** | Join or create a room by name, with optional JSON options. |
+| **Join room** | Join an existing room by name. |
+| **Create room** | Always create a new room. |
+| **Join room by ID** | Join a specific room using its room ID. |
+
+Example event sheet setup:
+
+```
+Event: On start of layout
+  Action: Colyseus > Set endpoint > "ws://localhost:2567"
+  Action: Colyseus > Join or create room > "game" | options: {"map":"forest"}
+
+Event: Colyseus > On joined room
+  Action: System > Set text > Room ID: [Colyseus.RoomId]
+```
+
+## Sending messages
+
+Use the **Send message** action:
+
+```
+Event: On key pressed (ArrowUp)
+  Action: Colyseus > Send message > "move" | data: {"direction":"up"}
+```
+
+The second parameter accepts a JSON string or expression.
+
+## Receiving messages
+
+Use the **On message** trigger, which fires when the server sends a matching message type:
+
+```
+Event: Colyseus > On message ("chat")
+  Action: ChatBox > Add message > [Colyseus.MessageData]
+```
+
+`Colyseus.MessageData` is a JSON expression containing the decoded message payload.
+
+## Listening to state changes
+
+Use the **On state change** trigger to react to server state updates:
+
+```
+Event: Colyseus > On state change
+  Action: System > Set value > PlayerX = Colyseus.StateValue("players." & SessionID & ".position.x")
+```
+
+`Colyseus.StateValue(path)` accepts a dot-notation path into the state object.
+
+## Room event triggers
+
+| Trigger | Fires when |
+|---|---|
+| **On joined room** | Room connection succeeds. |
+| **On state change** | Server sends a state update. |
+| **On message** | Server sends a typed message. |
+| **On error** | A room or connection error occurs. |
+| **On leave** | The connection closes cleanly. |
+
+Access room metadata inside triggers:
+
+| Expression | Value |
+|---|---|
+| `Colyseus.RoomId` | The room's unique ID. |
+| `Colyseus.SessionId` | This client's session ID. |
+| `Colyseus.ReconnectionToken` | Token for reconnecting after a disconnect. |
+
+## Leaving a room
+
+Use the **Leave room** action in an event:
+
+```
+Event: On key pressed (Escape)
+  Action: Colyseus > Leave room
+```
+
+## Reconnection
+
+```
+Event: On start of layout
+  Condition: Colyseus.ReconnectionToken != ""
+  Action: Colyseus > Reconnect > [Colyseus.ReconnectionToken]
+```
+
+<Note>
+Store `Colyseus.ReconnectionToken` to a local storage variable before the layout ends if you want to restore the session on the next launch.
+</Note>
+
+<Tip>
+A raw demo project for Construct 3 is available at [github.com/colyseus/construct3-demo](https://github.com/colyseus/construct3-demo).
+</Tip>

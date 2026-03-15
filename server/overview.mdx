@@ -1,0 +1,193 @@
+---
+title: "Server Overview"
+description: "How to create and configure a Colyseus server: defineServer(), room registration, Express integration, and custom HTTP endpoints."
+---
+
+## Creating a server
+
+Colyseus exposes two ways to create a server. The low-level approach uses `defineServer()` directly from `@colyseus/core`. The higher-level approach uses `@colyseus/tools`, which adds automatic transport selection, multi-process support, and Colyseus Cloud integration.
+
+<Tabs>
+  <Tab title="@colyseus/tools (recommended)">
+    ```typescript
+    import { listen } from "@colyseus/tools";
+    import { defineRoom } from "@colyseus/core";
+    import { MyRoom } from "./rooms/MyRoom";
+
+    listen({
+      rooms: {
+        my_room: defineRoom(MyRoom),
+      },
+    });
+    ```
+
+    `listen()` reads `PORT` from the environment (default `2567`), auto-selects the
+    right transport (`BunWebSockets` under Bun, `WebSocketTransport` otherwise),
+    and configures Redis driver/presence automatically when running on Colyseus Cloud.
+  </Tab>
+  <Tab title="defineServer() directly">
+    ```typescript
+    import { defineServer, defineRoom } from "@colyseus/core";
+    import { WebSocketTransport } from "@colyseus/ws-transport";
+    import { MyRoom } from "./rooms/MyRoom";
+
+    const server = defineServer({
+      transport: new WebSocketTransport(),
+      rooms: {
+        my_room: defineRoom(MyRoom),
+      },
+    });
+
+    server.listen(2567);
+    ```
+  </Tab>
+</Tabs>
+
+## Registering rooms
+
+Rooms are registered at server start via `defineRoom()`, which wraps a Room class in a `RegisteredHandler`.
+
+```typescript
+import { defineRoom } from "@colyseus/core";
+import { BattleRoom } from "./rooms/BattleRoom";
+
+export const rooms = {
+  // The key is the public room name used by clients during matchmaking
+  battle: defineRoom(BattleRoom),
+
+  // Pass default onCreate options as the second argument
+  ranked_battle: defineRoom(BattleRoom, { ranked: true }),
+};
+```
+
+Pass the `rooms` map to either `listen()` or `defineServer()`:
+
+```typescript
+listen({ rooms });
+```
+
+You can also register rooms imperatively on an existing `Server` instance:
+
+```typescript
+const server = new Server(options);
+server.define("battle", BattleRoom);
+server.define("battle", BattleRoom, { ranked: true }); // with default options
+server.define(BattleRoom); // uses the class name as the room name
+```
+
+To remove a room type from matchmaking without destroying existing instances:
+
+```typescript
+server.removeRoomType("battle");
+```
+
+## Express integration
+
+Pass an `express` callback to `defineServer()` (or `ServerOptions`) to configure Express routes. The transport layer creates an Express-compatible app and passes it to your callback.
+
+```typescript
+import express from "express";
+import { defineServer, defineRoom } from "@colyseus/core";
+import { WebSocketTransport } from "@colyseus/ws-transport";
+
+const server = defineServer({
+  transport: new WebSocketTransport(),
+  rooms: { my_room: defineRoom(MyRoom) },
+  express: (app) => {
+    app.use(express.json());
+
+    app.get("/api/hello", (req, res) => {
+      res.json({ hello: "world" });
+    });
+
+    app.post("/api/data", (req, res) => {
+      res.json({ received: req.body });
+    });
+  },
+});
+```
+
+When using `@colyseus/tools`, use `initializeExpress` instead:
+
+```typescript
+listen({
+  rooms: { my_room: defineRoom(MyRoom) },
+  initializeExpress: (app) => {
+    app.get("/api/hello", (req, res) => res.json({ hello: "world" }));
+  },
+});
+```
+
+<Note>
+  For `@colyseus/uwebsockets-transport`, the Express integration uses the
+  `uwebsockets-express` adapter. Install it separately:
+
+  ```bash
+  # Express v5
+  npm install --save uwebsockets-express@^2.0.1
+
+  # Express v4
+  npm install --save uwebsockets-express@^1.4.1
+  ```
+</Note>
+
+## Custom HTTP endpoints with createEndpoint
+
+For a lighter alternative to Express, use `createEndpoint()` and `createRouter()` from `@colyseus/core`. These integrate directly with the transport router and work with all transports including uWebSockets and Bun.
+
+```typescript
+import { defineServer, defineRoom, createEndpoint, createRouter } from "@colyseus/core";
+import { WebSocketTransport } from "@colyseus/ws-transport";
+
+const routes = createRouter({
+  hello: createEndpoint("/api/hello", { method: "GET" }, async (ctx) => {
+    return new Response(JSON.stringify({ hello: "world" }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }),
+
+  create_session: createEndpoint("/api/session", { method: "POST" }, async (ctx) => {
+    const body = await ctx.request.json();
+    return new Response(JSON.stringify({ sessionId: body.userId }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }),
+});
+
+const server = defineServer({
+  transport: new WebSocketTransport(),
+  rooms: { my_room: defineRoom(MyRoom) },
+  routes,
+});
+```
+
+The router automatically includes a `GET /` route (returns the Colyseus version) and a `GET /__healthcheck` endpoint.
+
+## Lifecycle hooks
+
+The `Server` class exposes hooks for shutdown events:
+
+```typescript
+server.onBeforeShutdown(async () => {
+  // called before rooms are shut down
+  await db.flushPendingWrites();
+});
+
+server.onShutdown(async () => {
+  // called after rooms are shut down
+  await db.close();
+});
+```
+
+## Latency simulation (development)
+
+Add artificial round-trip latency during development to test network conditions:
+
+```typescript
+server.simulateLatency(200); // 200ms round-trip (100ms each way)
+server.simulateLatency(0);   // disable
+```
+
+<Warning>
+  `simulateLatency()` modifies `Transport` prototype methods globally. Only use this in development.
+</Warning>

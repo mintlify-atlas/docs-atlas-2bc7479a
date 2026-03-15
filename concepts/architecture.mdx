@@ -1,0 +1,203 @@
+---
+title: "Architecture"
+description: "How Colyseus is structured: server, transport, matchmaker, rooms, and presence."
+---
+
+Colyseus is a Node.js multiplayer game server framework built around a layered architecture. Each layer has a single responsibility, and together they handle everything from accepting WebSocket connections to synchronizing game state across clients.
+
+## Layer overview
+
+```
+┌─────────────────────────────────────────┐
+│               Server                    │  Entry point, wires everything together
+├─────────────────────────────────────────┤
+│             Transport                   │  WebSocket (or uWebSockets) connections
+├─────────────────────────────────────────┤
+│             MatchMaker                  │  Room discovery and seat reservations
+├──────────────────┬──────────────────────┤
+│    Room (inst.)  │    Room (inst.)  ...  │  Game session logic and state
+├──────────────────┴──────────────────────┤
+│              Presence                   │  Cross-process pub/sub and shared state
+└─────────────────────────────────────────┘
+```
+
+### Server
+
+The `Server` class is the top-level entry point. It owns the transport and the matchmaker, holds your room definitions, and manages graceful shutdown.
+
+You register room types with `server.define()`, then call `server.listen()` to start accepting connections:
+
+```typescript
+import { Server } from "@colyseus/core";
+import { WebSocketTransport } from "@colyseus/ws-transport";
+import { GameRoom } from "./rooms/GameRoom";
+
+const server = new Server({
+  transport: new WebSocketTransport(),
+});
+
+server.define("game", GameRoom);
+server.listen(2567);
+```
+
+In most projects you will use `@colyseus/tools` instead of constructing `Server` directly. The `config()` + `listen()` helper wraps the same `Server` class and adds sensible defaults:
+
+```typescript
+import config, { listen } from "@colyseus/tools";
+import { defineRoom } from "@colyseus/core";
+import { GameRoom } from "./rooms/GameRoom";
+
+export const server = config({
+  rooms: {
+    game: defineRoom(GameRoom),
+  },
+});
+
+listen(server);
+```
+
+The `Server` constructor accepts a `ServerOptions` object with the following properties:
+
+| Option | Type | Description |
+|---|---|---|
+| `transport` | `Transport` | Transport layer instance (default: `WebSocketTransport`) |
+| `presence` | `Presence` | Presence backend (default: `LocalPresence`) |
+| `driver` | `MatchMakerDriver` | Matchmaking driver (default: `LocalDriver`) |
+| `publicAddress` | `string` | Public hostname or URL, used when running behind a proxy |
+| `gracefullyShutdown` | `boolean` | Register SIGTERM/SIGINT handlers (default: `true`) |
+| `devMode` | `boolean` | Restore rooms and reconnect clients on server restart |
+| `express` | `(app) => void` | Callback to attach custom Express routes |
+| `beforeListen` | `() => Promise<void>` | Async hook called before the server starts listening |
+
+### Transport
+
+The transport layer sits between the OS network stack and the rest of Colyseus. It is responsible for:
+
+- Accepting raw connections and upgrading them to WebSocket
+- Demultiplexing incoming binary frames to the correct room
+- Forwarding outgoing messages from rooms back to clients
+
+Colyseus ships with two transports:
+
+<CardGroup cols={2}>
+  <Card title="WebSocketTransport" icon="plug" href="/server/transport">
+    The default transport built on the `ws` package. Suitable for most deployments.
+  </Card>
+  <Card title="uWebSocketsTransport" icon="bolt" href="/server/transport">
+    High-performance transport backed by `uWebSockets.js`. Lower memory and CPU overhead at scale.
+  </Card>
+</CardGroup>
+
+The `Transport` base class defines a small interface: `listen()`, `shutdown()`, and `simulateLatency()`. You can implement your own transport if you need a custom protocol.
+
+### MatchMaker
+
+The matchmaker is the central coordinator for room creation and client routing. When a client calls `joinOrCreate`, `join`, `create`, or `joinById` from the client SDK, the request arrives as an HTTP call that the matchmaker handles:
+
+<Steps>
+  <Step title="Look up the room type">
+    The matchmaker checks the registry for a handler matching the requested room name.
+  </Step>
+  <Step title="Find or create a room instance">
+    For `joinOrCreate` and `join`, the matchmaker queries the driver for an existing, unlocked room that matches the client's filter options. If none exists (and the operation is `joinOrCreate` or `create`), a new room instance is spawned.
+  </Step>
+  <Step title="Reserve a seat">
+    The matchmaker calls `reserveSeatFor()`, which stores a short-lived seat reservation (default 15 seconds) against the room. The reservation prevents race conditions when many clients try to join simultaneously.
+  </Step>
+  <Step title="Return seat reservation to client">
+    The client receives a `sessionId` and the room's address. It immediately opens a WebSocket connection and presents its `sessionId` to claim the reserved seat.
+  </Step>
+</Steps>
+
+The matchmaker uses a **driver** to persist room listings. The default `LocalDriver` stores listings in memory (single process). For multi-process deployments, you replace it with `RedisDriver`, which stores listings in Redis so all processes share the same view.
+
+### Rooms
+
+A `Room` instance represents a single game session. It holds:
+
+- The synchronized state (`this.state`)
+- The list of connected clients (`this.clients`)
+- Message handlers registered with `this.onMessage()`
+- A `ClockTimer` for timed events (`this.clock`)
+- A reference to the shared `Presence` backend
+
+Rooms are created on demand by the matchmaker. By default a room is disposed automatically when its last client disconnects (`autoDispose: true`). Multiple room instances of the same type can run simultaneously; they are independent from each other.
+
+### Presence
+
+Presence is a Redis-inspired key/value and pub/sub layer used for cross-process communication. It powers:
+
+- Room listing synchronization across processes (via the driver)
+- Process health checks
+- Inter-process room method calls (IPC)
+- Optional user-land pub/sub inside rooms (e.g., notifying all rooms when a global event fires)
+
+The `Presence` interface mirrors a Redis-like API: `get`, `set`, `subscribe`, `publish`, `hset`, `hget`, and more. In single-process mode `LocalPresence` stores everything in memory. For multi-process or multi-machine deployments, swap it for `RedisPresence`.
+
+## Setting up a server
+
+A minimal but complete server using `@colyseus/tools`:
+
+```typescript
+import config, { listen } from "@colyseus/tools";
+import { defineRoom } from "@colyseus/core";
+import { GameRoom } from "./rooms/GameRoom";
+
+export const server = config({
+  // Register room types
+  rooms: {
+    game: defineRoom(GameRoom),
+  },
+
+  // Optional: run async setup before the server starts
+  beforeListen: async () => {
+    await connectToDatabase();
+  },
+
+  // Optional: add custom HTTP routes via Express
+  express: (app) => {
+    app.get("/health", (_req, res) => res.json({ status: "ok" }));
+  },
+});
+
+listen(server);
+```
+
+When deploying to **Colyseus Cloud**, `@colyseus/tools` automatically replaces `LocalPresence` and `LocalDriver` with their Redis-backed counterparts and scales across CPU cores. No code changes are required.
+
+## Multi-process scaling
+
+Colyseus scales horizontally by running multiple Node.js processes, each handling a subset of room instances. All processes share the same Redis-backed `Presence` and `Driver`, so the matchmaker can route clients to rooms regardless of which process created them.
+
+```
+ Process 1          Process 2          Process 3
+ ──────────         ──────────         ──────────
+ Room A             Room C             Room E
+ Room B             Room D             Room F
+        \               |              /
+         ──────── Redis (shared) ─────
+                  Driver + Presence
+```
+
+When a client joins a room that lives on a different process, the matchmaker uses the IPC channel (backed by Presence pub/sub) to forward the seat reservation to the owning process.
+
+<Tip>
+You can also run one process as a **standalone matchmaker** by setting `isStandaloneMatchMaker: true` in `ServerOptions`. That process accepts matchmaking HTTP requests but never spawns rooms, leaving room creation to the worker processes.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Rooms" icon="door-open" href="/concepts/rooms">
+    Room lifecycle, client connections, and state management.
+  </Card>
+  <Card title="State sync" icon="arrows-rotate" href="/concepts/state-sync">
+    How Schema-based delta patching works.
+  </Card>
+  <Card title="Matchmaking" icon="users" href="/concepts/matchmaking">
+    How clients find and create rooms.
+  </Card>
+  <Card title="Client-server communication" icon="message" href="/concepts/client-server">
+    Messages, broadcasting, and the binary protocol.
+  </Card>
+</CardGroup>

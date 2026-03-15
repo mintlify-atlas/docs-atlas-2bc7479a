@@ -1,0 +1,200 @@
+---
+title: "Authentication"
+description: "Client-side authentication with the Auth class: email/password, anonymous sign-in, OAuth providers, token storage, and using the token with room joins."
+---
+
+The `Auth` class is available on every `ColyseusSDK` instance as `client.auth`. It communicates with the Colyseus auth module on your server (mounted at `/auth` by default) and automatically stores the JWT token in `localStorage`.
+
+<Note>
+The server must have the `@colyseus/auth` module configured for these methods to work. See the [server authentication docs](/server/auth/overview) for setup instructions.
+</Note>
+
+## Checking the current user
+
+Use `auth.onChange` to reactively track the signed-in state. It fires once with the initial user data on registration, and again whenever the user signs in or out.
+
+```typescript
+const client = new Client("ws://localhost:2567");
+
+client.auth.onChange((response) => {
+  if (response.user) {
+    console.log("Signed in as:", response.user.email);
+    console.log("Token:", response.token);
+  } else {
+    console.log("Not signed in");
+  }
+});
+```
+
+`onChange` returns an unsubscribe function:
+
+```typescript
+const unsubscribe = client.auth.onChange((response) => { /* ... */ });
+
+// Stop listening
+unsubscribe();
+```
+
+---
+
+## Registering with email and password
+
+```typescript
+const { user, token } = await client.auth.registerWithEmailAndPassword(
+  "player@example.com",
+  "s3cur3P@ssword"
+);
+
+console.log("Registered:", user);
+```
+
+<ParamField path="email" type="string" required>
+  The player's email address.
+</ParamField>
+
+<ParamField path="password" type="string" required>
+  The player's password.
+</ParamField>
+
+<ParamField path="options" type="object">
+  Optional extra fields forwarded to the server's register handler.
+</ParamField>
+
+On success, the token is stored in `localStorage` under the key `"colyseus-auth-token"` and automatically attached to all subsequent HTTP and room connection requests.
+
+---
+
+## Signing in with email and password
+
+```typescript
+const { user, token } = await client.auth.signInWithEmailAndPassword(
+  "player@example.com",
+  "s3cur3P@ssword"
+);
+```
+
+<ParamField path="email" type="string" required>
+  The player's email address.
+</ParamField>
+
+<ParamField path="password" type="string" required>
+  The player's password.
+</ParamField>
+
+---
+
+## Anonymous sign-in
+
+Create a guest session without requiring any credentials. Useful for immediate onboarding before account creation.
+
+```typescript
+const { user, token } = await client.auth.signInAnonymously();
+
+console.log("Anonymous user ID:", user.id);
+```
+
+<ParamField path="options" type="object">
+  Optional extra fields forwarded to the server's anonymous handler.
+</ParamField>
+
+---
+
+## OAuth provider sign-in
+
+Opens a popup window for OAuth sign-in. The popup posts a message back to the opener with the user and token when authentication completes.
+
+```typescript
+try {
+  const { user, token } = await client.auth.signInWithProvider("google");
+  console.log("Signed in with Google:", user);
+} catch (error) {
+  if (error === "cancelled") {
+    console.log("User closed the popup");
+  }
+}
+```
+
+<ParamField path="providerName" type="string" required>
+  The OAuth provider identifier configured on the server, for example `"google"`, `"github"`, or `"discord"`.
+</ParamField>
+
+<ParamField path="settings" type="object">
+  Optional popup settings.
+
+  - `width` — popup width in pixels (default `480`)
+  - `height` — popup height in pixels (default `768`)
+  - `prefix` — URL prefix for the provider endpoint (default `/auth/provider`)
+</ParamField>
+
+<Note>
+If the player already has a token (for example from an anonymous session), it is forwarded to the server as a query parameter so the server can upgrade the anonymous account to the OAuth-linked account.
+</Note>
+
+---
+
+## Sending a password reset email
+
+```typescript
+await client.auth.sendPasswordResetEmail("player@example.com");
+```
+
+---
+
+## Signing out
+
+```typescript
+await client.auth.signOut();
+```
+
+Clears the stored token from `localStorage` and fires `onChange` with `{ user: null, token: null }`.
+
+---
+
+## Token management
+
+The token is stored automatically after every successful auth call and loaded from storage on SDK initialization. You can read or set it directly:
+
+```typescript
+// Read the current token
+console.log(client.auth.token);
+
+// Set a token manually (e.g. retrieved from your own backend)
+client.auth.token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...";
+```
+
+Whenever `client.auth.token` is set, it is automatically added as a `Bearer` header on all HTTP requests and forwarded as `_authToken` in room connection URLs.
+
+---
+
+## Using auth with room joins
+
+No extra steps are needed — once `client.auth.token` is set, all join calls include it automatically.
+
+```typescript
+await client.auth.signInWithEmailAndPassword("player@example.com", "password");
+
+// Token is included automatically
+const room = await client.joinOrCreate("game");
+```
+
+On the server, access the verified user via `client.auth` inside room lifecycle methods:
+
+```typescript
+// server-side room
+onJoin(client, options) {
+  console.log("Authenticated user:", client.auth.userId);
+}
+```
+
+---
+
+## Fetching user data
+
+After sign-in you can re-fetch the current user's profile from the server at any time:
+
+```typescript
+const { user } = await client.auth.getUserData();
+console.log(user);
+```
+
+This hits the `/auth/userdata` endpoint and requires a valid token to be present.

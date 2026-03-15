@@ -1,0 +1,376 @@
+---
+title: "Room API"
+description: "Full Room class API reference: properties, methods, and TypeScript generics."
+---
+
+A `Room` represents a game session or communication channel between a group of clients. Rooms are created on demand by the matchmaker and disposed when all clients have left (unless `autoDispose` is disabled).
+
+## Generic type parameters
+
+```typescript
+class Room<T extends RoomOptions = RoomOptions>
+```
+
+The `RoomOptions` interface allows you to type the room's state, metadata, and client:
+
+```typescript
+interface MyRoomOptions {
+  state?: MyState;          // the synchronized state type
+  metadata?: { ranked: boolean; map: string }; // matchmaking metadata type
+  client?: MyClient;        // custom Client type
+}
+
+class MyRoom extends Room<MyRoomOptions> {
+  // this.state is MyState
+  // this.metadata is { ranked: boolean; map: string }
+  // this.clients contains MyClient instances
+}
+```
+
+---
+
+## Properties
+
+### roomId
+
+```typescript
+public get roomId(): string
+public set roomId(id: string)  // only during onCreate()
+```
+
+A unique, auto-generated 9-character alphanumeric string. You may override it during `onCreate()` to use a custom ID (e.g. a slug). Setting it after the room is created throws an error.
+
+### roomName
+
+```typescript
+public get roomName(): string
+```
+
+The public room name used for matchmaking — the key you provided to `defineRoom()` or `server.define()`. Read-only after the room is defined.
+
+### clients
+
+```typescript
+public clients: ClientArray<ExtractRoomClient<T>>
+```
+
+The array of currently connected clients. Supports standard array methods plus `clients.getById(sessionId)` for O(1) lookup by session ID.
+
+### maxClients
+
+```typescript
+public maxClients: number  // default: Infinity
+```
+
+Maximum number of clients allowed to join. Setting this property automatically calls `setMatchmaking({ maxClients })`, which persists the value to the driver. When the limit is reached the room locks automatically; it unlocks when a client leaves.
+
+### state
+
+```typescript
+public state: ExtractRoomState<T>
+```
+
+The synchronized state instance. Assign a Schema instance (or any serializable object) here to enable state synchronization. Equivalent to calling `this.setState(state)`. See [Room State](/server/room-state) for details.
+
+### presence
+
+```typescript
+public presence: Presence
+```
+
+The presence backend (pub/sub) shared across all rooms and processes. Use it for cross-room communication, shared counters, or broadcasting to external consumers.
+
+### clock
+
+```typescript
+public clock: ClockTimer
+```
+
+A `ClockTimer` tied to the room's lifecycle. All `clock.setTimeout()` and `clock.setInterval()` callbacks are cleared when the room is disposed. The clock is also used internally to tick the simulation interval.
+
+### locked
+
+```typescript
+public get locked(): boolean
+```
+
+Read-only. `true` when the room is locked (either explicitly via `lock()` or because `maxClients` was reached). Locked rooms do not accept new joiners.
+
+### autoDispose
+
+```typescript
+public autoDispose: boolean  // default: true
+```
+
+When `true`, the room disposes itself once all clients have left. Set to `false` for persistent rooms (e.g. a global lobby that should always exist).
+
+### patchRate
+
+```typescript
+public patchRate: number | null  // default: 50 (ms) — 20fps
+```
+
+How often (in milliseconds) state diffs are broadcast to all clients. Set to `null` or `0` to disable automatic broadcasting and call `broadcastPatch()` manually. See [Room State](/server/room-state).
+
+### seatReservationTimeout
+
+```typescript
+public seatReservationTimeout: number  // default: 15 (seconds)
+```
+
+How many seconds a reserved seat is held while a client completes the join handshake (including `onAuth()`). After this timeout the seat is released. The global default is controlled by the `COLYSEUS_SEAT_RESERVATION_TIME` environment variable.
+
+### maxMessagesPerSecond
+
+```typescript
+public maxMessagesPerSecond: number  // default: Infinity
+```
+
+Maximum number of messages a client can send per second. Clients that exceed this rate are forcibly disconnected.
+
+### metadata
+
+```typescript
+public get metadata(): ExtractRoomMetadata<T>
+public set metadata(meta)  // only during onCreate()
+```
+
+Matchmaking metadata visible to clients during room listing. Can only be set directly during `onCreate()`. To update metadata after the room is created, use `setMatchmaking({ metadata })` or `setMetadata()`.
+
+### messages
+
+```typescript
+public messages?: Messages<this>
+```
+
+Optional property for declaring message handlers as a typed object instead of calling `onMessage()` imperatively. See [Room Messages](/server/room-messages).
+
+---
+
+## Methods
+
+### setState()
+
+```typescript
+public setState(newState: ExtractRoomState<T>): void
+```
+
+<Tip>
+  `setState()` is deprecated. Assign `this.state = new MyState()` directly instead.
+</Tip>
+
+Sets the synchronized state. When the assigned value is a `@colyseus/schema` instance, the `SchemaSerializer` is used automatically. For raw JavaScript objects, `NoneSerializer` is used (full state is sent on every patch rather than diffs).
+
+### setSimulationInterval()
+
+```typescript
+public setSimulationInterval(
+  onTickCallback: (deltaTime: number) => void,
+  delay?: number   // default: 16.6ms (60fps)
+): void
+```
+
+Sets the game loop. `deltaTime` is the time elapsed since the last tick in milliseconds. Each tick also calls `clock.tick()` to advance clock-based timers.
+
+```typescript
+onCreate() {
+  this.state = new GameState();
+  this.setSimulationInterval((dt) => this.update(dt), 1000 / 60);
+}
+
+update(dt: number) {
+  for (const player of this.state.players.values()) {
+    player.x += player.vx * (dt / 1000);
+    player.y += player.vy * (dt / 1000);
+  }
+}
+```
+
+### setPatchRate()
+
+```typescript
+public setPatchRate(milliseconds: number | null): void
+```
+
+<Tip>
+  `setPatchRate()` is deprecated. Assign `this.patchRate = ms` directly instead.
+</Tip>
+
+### setMetadata()
+
+```typescript
+public async setMetadata(
+  meta: Partial<ExtractRoomMetadata<T>>,
+  persist?: boolean  // default: true
+): Promise<void>
+```
+
+Merge new values into the room's matchmaking metadata and persist them to the driver. The lobby listing is updated automatically.
+
+### setMatchmaking()
+
+```typescript
+public async setMatchmaking(updates: {
+  metadata?: ExtractRoomMetadata<T>;
+  private?: boolean;
+  locked?: boolean;
+  maxClients?: number;
+  unlisted?: boolean;
+  [key: string]: any;
+}): Promise<void>
+```
+
+Update multiple matchmaking/listing properties in a single driver persist call. Preferred over calling `setMetadata()`, `lock()`, etc. separately.
+
+```typescript
+await this.setMatchmaking({
+  metadata: { difficulty: "hard", round: this.round },
+  maxClients: 8,
+  locked: true,
+});
+```
+
+### lock() / unlock()
+
+```typescript
+public async lock(): Promise<void>
+public async unlock(): Promise<void>
+```
+
+Explicitly lock or unlock the room. A locked room refuses new clients. Locking via `lock()` is "explicit" — the room stays locked even if a client leaves and `maxClients` is no longer reached. Unlocking removes the explicit lock.
+
+### disconnect()
+
+```typescript
+public disconnect(closeCode?: number): Promise<void>
+// default closeCode: 4000 (consented leave)
+```
+
+Disconnects all clients and disposes the room. In `devMode`, uses close code `MAY_TRY_RECONNECT` instead so clients attempt to reconnect.
+
+### broadcast()
+
+```typescript
+public broadcast<K>(
+  type: K,
+  message?: any,
+  options?: IBroadcastOptions
+): void
+
+interface IBroadcastOptions {
+  except?: Client | Client[];   // exclude these clients
+  afterNextPatch?: boolean;     // delay until after the next state patch
+}
+```
+
+Send a message to all connected clients. See [Room Messages](/server/room-messages).
+
+```typescript
+this.broadcast("explosion", { x: 10, y: 20 });
+
+// exclude the sender
+this.broadcast("chat", { text }, { except: client });
+
+// send after the next state patch
+this.broadcast("round_over", { winner: "Alice" }, { afterNextPatch: true });
+```
+
+### broadcastPatch()
+
+```typescript
+public broadcastPatch(): boolean
+```
+
+Manually trigger a state diff broadcast. Returns `true` if there were changes. Also calls `onBeforePatch()` if defined. See [Room State](/server/room-state).
+
+### allowReconnection()
+
+```typescript
+public allowReconnection(
+  previousClient: Client,
+  seconds: number | "manual"
+): Deferred<Client>
+```
+
+Call inside `onLeave()` or `onDrop()` to hold the client's seat for reconnection. The returned `Deferred` resolves with the new client when reconnection succeeds, or rejects if the timeout expires.
+
+```typescript
+async onLeave(client: Client, code: number) {
+  const reconnection = this.allowReconnection(client, 30);
+  try {
+    await reconnection;
+    // client reconnected
+  } catch (e) {
+    // timeout expired — clean up
+    this.state.players.delete(client.sessionId);
+  }
+}
+```
+
+Use `"manual"` to hold the seat indefinitely and call `reconnection.reject()` when you decide to give up:
+
+```typescript
+async onLeave(client: Client) {
+  const reconnection = this.allowReconnection(client, "manual");
+  this.clock.setTimeout(() => reconnection.reject(), 60_000);
+  await reconnection;
+}
+```
+
+### onMessage()
+
+```typescript
+public onMessage<T>(
+  type: string | number | "*",
+  callback: (client: Client, message: T) => void
+): () => void  // returns unbind function
+```
+
+Register a message handler. See [Room Messages](/server/room-messages).
+
+### setPrivate()
+
+```typescript
+public async setPrivate(bool?: boolean, persist?: boolean): Promise<void>
+```
+
+Mark the room as private (hidden from `getAvailableRooms()` results). Private rooms are still joinable if the client knows the `roomId`.
+
+---
+
+## client.send()
+
+Send a message from the server to a specific client:
+
+```typescript
+client.send(type: string | number, message?: any, options?: ISendOptions): void
+```
+
+```typescript
+client.send("update", { score: 100 });
+client.send("error", { code: 42, message: "Invalid move" });
+
+// send after the next state patch
+client.send("welcome", { map: "forest" }, { afterNextPatch: true });
+```
+
+---
+
+## onUncaughtException
+
+Define this optional method to catch exceptions thrown inside lifecycle methods and message handlers:
+
+```typescript
+class MyRoom extends Room {
+  onUncaughtException(error: RoomException, methodName: RoomMethodName) {
+    console.error(`[${methodName}] uncaught exception:`, error.cause);
+    // Do not re-throw. The framework handles cleanup.
+  }
+}
+```
+
+When defined, these methods are wrapped in `try/catch` automatically:
+- `onCreate`, `onAuth`, `onJoin`, `onLeave`, `onDrop`, `onReconnect`, `onDispose`
+- `onMessage` handlers
+- `clock.setTimeout`, `clock.setInterval`
+- `setSimulationInterval` callback

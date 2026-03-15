@@ -1,0 +1,171 @@
+---
+title: "JWT"
+description: "Sign and verify JSON Web Tokens with the JWT utility from @colyseus/auth."
+---
+
+The `JWT` utility is exported from `@colyseus/auth` and wraps the `jsonwebtoken` library with
+Promise-based signing, verification, and Express/better-call middleware.
+
+```typescript
+import { JWT } from "@colyseus/auth";
+```
+
+## Configuration
+
+The only required setting is the signing secret. Set it via the environment variable or directly:
+
+```bash
+JWT_SECRET=your-very-long-random-secret
+```
+
+```typescript
+import { JWT } from "@colyseus/auth";
+
+// Alternatively, set the secret in code
+JWT.settings.secret = "your-very-long-random-secret";
+
+// Change the default algorithm (default: HS256)
+JWT.settings.verify.algorithms = ["HS256"];
+```
+
+<Warning>
+  Never commit `JWT_SECRET` to source control. Use environment variables or a secrets manager.
+</Warning>
+
+## `JWT.sign(payload, options?)`
+
+Signs a payload and returns a token string. The first algorithm in `JWT.settings.verify.algorithms`
+is used for signing (default: `HS256`).
+
+```typescript
+const token = await JWT.sign({ id: user.id, email: user.email });
+```
+
+Pass standard `jsonwebtoken` sign options as the second argument:
+
+```typescript
+// Token expires in 7 days
+const token = await JWT.sign({ id: user.id }, { expiresIn: "7d" });
+
+// Token expires in 30 minutes (used internally for password reset)
+const resetToken = await JWT.sign({ email }, { expiresIn: "30m" });
+```
+
+<ParamField path="payload" type="object" required>
+  Any serializable object to encode into the token.
+</ParamField>
+
+<ParamField path="options" type="SignOptions">
+  Standard `jsonwebtoken` sign options. Common fields: `expiresIn`, `algorithm`, `issuer`.
+</ParamField>
+
+## `JWT.verify(token, options?)`
+
+Verifies a token and returns the decoded payload. Throws an error if the token is expired, has an
+invalid signature, or cannot be decoded.
+
+```typescript
+try {
+  const payload = await JWT.verify(token);
+  console.log(payload.id, payload.email);
+} catch (err) {
+  // TokenExpiredError or JsonWebTokenError
+  console.error("Invalid token:", err.message);
+}
+```
+
+Pass a type parameter to get a typed payload:
+
+```typescript
+type UserPayload = { id: string; email: string; iat: number; exp: number };
+const payload = await JWT.verify<UserPayload>(token);
+console.log(payload.email); // typed
+```
+
+<ParamField path="token" type="string" required>
+  The JWT string to verify.
+</ParamField>
+
+<ParamField path="options" type="VerifyOptions">
+  Standard `jsonwebtoken` verify options. When omitted, `JWT.settings.verify` is used.
+</ParamField>
+
+## `JWT.decode(token)`
+
+Decodes the payload **without** verifying the signature. Use only when you need to inspect the
+contents before deciding whether to verify, or when the signature is validated by another layer.
+
+```typescript
+const decoded = JWT.decode(token);
+```
+
+## Using JWT in `onAuth()`
+
+The most common use of `JWT.verify()` is inside a static `onAuth()` method on a room class. The
+client SDK sends the token as part of the connection handshake.
+
+```typescript
+import { Room } from "@colyseus/core";
+import { JWT, type JwtPayload } from "@colyseus/auth";
+
+export class GameRoom extends Room {
+  static async onAuth(token: string) {
+    // Throws if token is invalid or expired—the client is rejected.
+    const user = await JWT.verify<{ id: string; email: string }>(token);
+    return user;
+  }
+
+  onJoin(client, options) {
+    // client.auth is the value returned from onAuth()
+    console.log(client.auth.id, "joined");
+  }
+}
+```
+
+On the client side, pass the token when connecting:
+
+```typescript
+import { Client } from "colyseus.js";
+
+const client = new Client("ws://localhost:2567");
+const room = await client.joinOrCreate("game", {}, token);
+```
+
+## Middleware
+
+`JWT.middleware()` (also available as `auth.middleware()`) returns a function that works with both
+Express and the `better-call` framework. It reads the `Authorization: Bearer <token>` header,
+verifies the token, and attaches the decoded payload.
+
+```typescript
+import { auth } from "@colyseus/auth";
+
+// Express
+app.get("/profile", auth.middleware(), (req, res) => {
+  res.json(req.auth); // JwtPayload
+});
+```
+
+Returns `401 Unauthorized` when the header is missing or the token is invalid.
+
+## `JwtPayload` type
+
+`JwtPayload` is re-exported from `jsonwebtoken` and includes the standard registered claims:
+
+```typescript
+interface JwtPayload {
+  iss?: string;  // issuer
+  sub?: string;  // subject
+  aud?: string | string[];
+  exp?: number;  // expiration time (Unix timestamp)
+  nbf?: number;  // not before
+  iat?: number;  // issued at
+  jti?: string;  // JWT ID
+  [key: string]: any; // custom claims
+}
+```
+
+<Tip>
+  Always access `payload.exp` to check expiration in your own logic. `JWT.verify()` throws
+  automatically on expired tokens when verifying, so you usually do not need to check this manually.
+</Tip>

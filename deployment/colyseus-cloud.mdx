@@ -1,0 +1,112 @@
+---
+title: "Colyseus Cloud"
+description: "Deploy your Colyseus server on Colyseus Cloud: managed hosting with automatic scaling, Redis, SSL, and monitoring included."
+---
+
+Colyseus Cloud is a managed hosting platform built specifically for Colyseus servers. It handles infrastructure, scaling, Redis, SSL, and monitoring so you can focus on your game.
+
+## Benefits
+
+- **Automatic scaling**: processes scale up and down based on active rooms and CCU
+- **Redis included**: multi-process coordination is configured automatically — no manual Redis setup
+- **SSL termination**: HTTPS and WSS out of the box
+- **Monitoring dashboard**: view active rooms, connected clients, and server metrics
+- **Zero-downtime deploys**: rolling restarts keep the server available during updates
+
+## Deploying to Colyseus Cloud
+
+<Steps>
+  <Step title="Create an account">
+    Sign up at [colyseus.io/cloud](https://colyseus.io/cloud) and create a new application.
+  </Step>
+
+  <Step title="Connect your repository">
+    Link your GitHub repository to your Colyseus Cloud application. The platform will detect your `package.json` and build configuration automatically.
+  </Step>
+
+  <Step title="Configure your entry point">
+    Set your application entry point (typically `server.ts` or `app.ts`) in the Cloud dashboard. Your server must use `@colyseus/tools` and call `listen()` — the cloud platform configures the transport and Redis automatically when it detects the `COLYSEUS_CLOUD` environment variable.
+
+    A minimal entry point:
+
+    ```typescript
+    // app.ts
+    import { listen } from "@colyseus/tools";
+    import { defineRoom } from "@colyseus/core";
+    import { GameRoom } from "./rooms/GameRoom";
+
+    listen({
+      rooms: {
+        game: defineRoom(GameRoom),
+      },
+    });
+    ```
+
+    Projects created with `npm create colyseus-app@latest` already include this structure and are cloud-ready.
+  </Step>
+
+  <Step title="Deploy">
+    Push to your connected branch. Colyseus Cloud builds and deploys your server automatically.
+  </Step>
+</Steps>
+
+## How cloud listening works
+
+When `COLYSEUS_CLOUD` is set, `listen()` from `@colyseus/tools` switches from TCP port listening to Unix domain socket listening. Each process binds to `/run/colyseus/<port>.sock` instead of a TCP port:
+
+```typescript
+// From @colyseus/tools src/index.ts
+if (process.env.COLYSEUS_CLOUD !== undefined) {
+    const socketPath = `/run/colyseus/${port}.sock`;
+    await server.listen(socketPath, 0);
+} else {
+    await server.listen(port);
+}
+```
+
+The platform's nginx and process manager route incoming WebSocket connections to the correct socket file. Your code does not need to handle this — it happens automatically when `COLYSEUS_CLOUD` is present.
+
+## Port handling
+
+On Colyseus Cloud, the server always binds to port `2567` regardless of the `PORT` environment variable:
+
+```typescript
+// From @colyseus/tools src/index.ts
+if (process.env.COLYSEUS_CLOUD !== undefined) {
+    port = 2567;
+}
+```
+
+Do not configure a custom port for Colyseus Cloud deployments.
+
+## Redis and multi-process configuration
+
+When `COLYSEUS_CLOUD` is set and the server has more than one CPU core (or `REDIS_URI` is explicitly set), `@colyseus/tools` automatically configures `RedisDriver` and `RedisPresence` using the `REDIS_URI` environment variable. You do not need to configure Redis manually for cloud deployments:
+
+```typescript
+// Automatic cloud configuration (handled internally by @colyseus/tools)
+const useRedisConfig = (os.cpus().length > 1) || (process.env.REDIS_URI !== undefined);
+if (useRedisConfig) {
+    driver = new RedisDriver(process.env.REDIS_URI);
+    presence = new RedisPresence(process.env.REDIS_URI);
+}
+```
+
+If you need to provide your own Redis instance (for example, to share state with other services), set `REDIS_URI` in your application's environment variables in the Cloud dashboard.
+
+## Detecting the cloud environment
+
+If your code needs to behave differently on Colyseus Cloud versus local development, check the `COLYSEUS_CLOUD` environment variable:
+
+```typescript
+if (process.env.COLYSEUS_CLOUD !== undefined) {
+    // running on Colyseus Cloud
+    console.log("Running on Colyseus Cloud");
+} else {
+    // running locally or on self-hosted infrastructure
+}
+```
+
+<Note>
+  The `COLYSEUS_CLOUD` variable is always set by the platform. Do not set it manually in local development — doing so will activate socket-based listening and Redis auto-configuration, which may not work outside the cloud environment.
+</Note>

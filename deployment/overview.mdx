@@ -1,0 +1,83 @@
+---
+title: "Deployment overview"
+description: "Deployment options for Colyseus: managed cloud hosting, self-hosted VPS, and containerized Docker deployments."
+---
+
+Colyseus can run anywhere Node.js runs. This page covers the three main deployment strategies and what to consider when choosing between them.
+
+## Deployment options
+
+<CardGroup cols={2}>
+  <Card title="Colyseus Cloud" icon="cloud" href="/deployment/colyseus-cloud">
+    Managed hosting with automatic scaling, Redis included, SSL termination, and a built-in monitoring dashboard. The fastest path to production.
+  </Card>
+  <Card title="Self-hosted" icon="server" href="/deployment/self-hosted">
+    Deploy on any VPS or dedicated server. Full control over infrastructure using PM2 for process management and nginx as a reverse proxy.
+  </Card>
+</CardGroup>
+
+## Key considerations
+
+### Concurrent users (CCU)
+
+A single Colyseus process on a mid-range server can handle hundreds to a few thousand concurrent users depending on room complexity and state size. Beyond that, you need multiple processes backed by Redis.
+
+- **Single process**: suitable for small games or early development
+- **Multi-process with Redis**: horizontal scaling across CPU cores or machines
+- **Colyseus Cloud**: handles scaling automatically
+
+### Database and Redis
+
+For single-process deployments, Colyseus uses in-memory drivers and presence — no Redis required. For multi-process deployments, Redis is required so all processes share the room registry and pub/sub channel.
+
+Install the Redis packages:
+
+```bash
+npm install --save @colyseus/redis-driver @colyseus/redis-presence
+```
+
+Configure them in your server:
+
+```typescript
+import { listen } from "@colyseus/tools";
+import { RedisPresence } from "@colyseus/redis-presence";
+import { RedisDriver } from "@colyseus/redis-driver";
+
+listen({
+  rooms: { /* ... */ },
+  options: {
+    presence: new RedisPresence(process.env.REDIS_URI),
+    driver: new RedisDriver(process.env.REDIS_URI),
+  },
+});
+```
+
+### Regions
+
+Latency is critical for real-time multiplayer games. Deploy your servers in the region closest to your players. For global audiences, consider running server processes in multiple regions with clients connecting to the nearest one.
+
+## Environment variables
+
+Colyseus reads the following environment variables at runtime:
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `2567` | Port the server listens on. |
+| `REDIS_URI` | — | Redis connection string for multi-process deployments. |
+| `COLYSEUS_CLOUD` | — | Set automatically by Colyseus Cloud. Switches the server to socket-based listening. |
+| `NODE_APP_INSTANCE` | `0` | Process index set by PM2. Each process listens on `PORT + NODE_APP_INSTANCE`. |
+| `COLYSEUS_SEAT_RESERVATION_TIME` | `15` | Seconds a seat reservation is held during the join handshake. |
+
+## Production checklist
+
+Before going live, confirm the following:
+
+- [ ] `devMode` is `false` or not set
+- [ ] `NODE_ENV=production` is set
+- [ ] Redis is configured if running more than one process
+- [ ] `publicAddress` is set to the public-facing hostname when behind a load balancer
+- [ ] WebSocket connections are proxied correctly (nginx `Upgrade` headers)
+- [ ] SSL/TLS is terminated at the proxy or load balancer
+- [ ] Process manager (PM2 or equivalent) restarts the server on crash
+- [ ] Log output is persisted to a file or log aggregation service
+- [ ] The `@colyseus/monitor` dashboard is protected behind authentication

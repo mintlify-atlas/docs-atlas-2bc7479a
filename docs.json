@@ -1,122 +1,158 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Colyseus",
+  "theme": "maple",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#7e3de1",
+    "light": "#c699e2",
+    "dark": "#7a40d7"
   },
   "favicon": "/favicon.svg",
+  "logo": {
+    "light": "https://media.brand.dev/f3239a9d-7a12-4a94-8082-531c7bb3edea.png",
+    "dark": "https://media.brand.dev/f3239a9d-7a12-4a94-8082-531c7bb3edea.png"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/colyseus/colyseus"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/colyseus/colyseus"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Getting Started",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Introduction",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "getting-started/installation",
+              "getting-started/quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
-            ]
-          },
-          {
-            "group": "Writing content",
-            "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
-            ]
-          },
-          {
-            "group": "AI tools",
-            "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "concepts/architecture",
+              "concepts/rooms",
+              "concepts/state-sync",
+              "concepts/matchmaking",
+              "concepts/client-server"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Server",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Server Setup",
             "pages": [
-              "api-reference/introduction"
+              "server/overview",
+              "server/configuration",
+              "server/transport"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Room API",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "server/room",
+              "server/room-lifecycle",
+              "server/room-state",
+              "server/room-messages",
+              "server/built-in-rooms"
+            ]
+          },
+          {
+            "group": "Matchmaking",
+            "pages": [
+              "server/matchmaker",
+              "server/presence",
+              "server/drivers"
+            ]
+          },
+          {
+            "group": "Authentication",
+            "pages": [
+              "server/auth/overview",
+              "server/auth/jwt",
+              "server/auth/oauth"
+            ]
+          },
+          {
+            "group": "Scaling",
+            "pages": [
+              "server/scaling/overview",
+              "server/scaling/redis"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Client SDK",
+        "groups": [
+          {
+            "group": "JavaScript / TypeScript",
+            "pages": [
+              "client/overview",
+              "client/installation",
+              "client/connecting",
+              "client/room",
+              "client/auth"
+            ]
+          },
+          {
+            "group": "Game Engines",
+            "pages": [
+              "client/unity",
+              "client/godot",
+              "client/gamemaker",
+              "client/defold",
+              "client/construct3"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "State Schema",
+        "groups": [
+          {
+            "group": "Schema Overview",
+            "pages": [
+              "state/overview",
+              "state/schema-definition",
+              "state/callbacks",
+              "state/collections"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Deployment",
+        "groups": [
+          {
+            "group": "Deploy",
+            "pages": [
+              "deployment/overview",
+              "deployment/colyseus-cloud",
+              "deployment/self-hosted"
+            ]
+          },
+          {
+            "group": "Monitoring",
+            "pages": [
+              "deployment/monitor",
+              "deployment/loadtest"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

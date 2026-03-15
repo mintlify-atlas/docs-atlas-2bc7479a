@@ -1,0 +1,262 @@
+---
+title: "Client-side callbacks"
+description: "Reacting to state changes on the client: onChange, onAdd, onRemove, listen(), and getStateCallbacks()."
+---
+
+When the client SDK receives a binary state patch, it decodes it and fires callbacks for every field that changed. You register these callbacks once after joining a room — the SDK calls them automatically from that point on.
+
+## How callbacks are triggered
+
+Callbacks fire synchronously during patch decoding. The sequence on every patch tick is:
+
+1. The client receives a binary diff over the WebSocket.
+2. The `Decoder` applies the diff to the local state copy.
+3. For each changed field or collection item, the decoder fires the registered callback.
+4. After all callbacks run, the state reflects the latest server values.
+
+You do not need to poll `room.state` — mutations are pushed to you.
+
+## Full state replacement: `room.onStateChange`
+
+`onStateChange` fires after every patch, regardless of which fields changed. Use it when you need to react to any state update without caring which field triggered it:
+
+```typescript
+room.onStateChange((state) => {
+  console.log("State updated:", state);
+  renderHUD(state.tick, state.phase);
+});
+```
+
+This is the coarsest-grained callback. For most game logic, the field-level callbacks below are more useful.
+
+## Field listener: `state.listen()`
+
+`listen()` registers a callback for a single primitive field. It fires with the new value and the previous value every time that field changes:
+
+```typescript
+room.state.listen("phase", (newPhase, prevPhase) => {
+  console.log(`Phase changed from ${prevPhase} to ${newPhase}`);
+  ui.showPhaseLabel(newPhase);
+});
+
+room.state.listen("tick", (tick) => {
+  ui.updateTick(tick);
+});
+```
+
+`listen()` returns a cleanup function. Call it to unsubscribe:
+
+```typescript
+const unlisten = room.state.listen("tick", (tick) => updateUI(tick));
+
+// Later, when no longer needed:
+unlisten();
+```
+
+## Collection callbacks: `onAdd`, `onRemove`, `onChange`
+
+### `onAdd`
+
+Fires when a new item is inserted into a `MapSchema`, `ArraySchema`, `SetSchema`, or `CollectionSchema`. The callback receives the new item and its key:
+
+```typescript
+room.state.players.onAdd((player, sessionId) => {
+  console.log("Player joined:", sessionId);
+
+  // Add a sprite to the scene
+  const sprite = scene.addSprite(sessionId, player.x, player.y);
+
+  // Listen for position changes on this specific player
+  player.listen("x", (x) => sprite.setX(x));
+  player.listen("y", (y) => sprite.setY(y));
+  player.listen("isAlive", (alive) => {
+    alive ? sprite.revive() : sprite.die();
+  });
+});
+```
+
+<Tip>
+  Register `listen()` calls inside `onAdd` to track changes on each individual item. This pattern gives you granular, per-entity reactivity.
+</Tip>
+
+### `onRemove`
+
+Fires when an item is removed. The callback receives the item (in its last known state) and its key:
+
+```typescript
+room.state.players.onRemove((player, sessionId) => {
+  console.log("Player left:", sessionId);
+  scene.removeSprite(sessionId);
+});
+```
+
+### `onChange` on a collection
+
+Fires when an existing item in the collection changes:
+
+```typescript
+room.state.players.onChange((player, sessionId) => {
+  console.log("Player updated:", sessionId, player.score);
+});
+```
+
+### `onChange` on a Schema instance
+
+Fires when any tracked field on the instance changes. The callback receives the array of changed fields with their previous values:
+
+```typescript
+room.state.players.onAdd((player, sessionId) => {
+  player.onChange((changes) => {
+    changes.forEach(({ field, value, previousValue }) => {
+      console.log(`${field}: ${previousValue} → ${value}`);
+    });
+  });
+});
+```
+
+## Using `getStateCallbacks()`
+
+`getStateCallbacks()` is the recommended pattern when you want a cleaner separation between the SDK room object and your callback wiring. It returns a proxy object that mirrors the structure of your state and provides callback registrations on each node:
+
+```typescript
+import { Client, getStateCallbacks } from "@colyseus/sdk";
+
+const client = new Client("ws://localhost:2567");
+const room = await client.joinOrCreate<GameState>("game");
+
+const $ = getStateCallbacks(room);
+
+// Listen to a primitive field on the root state
+$.$onChange((changes) => {
+  console.log("Root state changed:", changes);
+});
+
+// Track players being added and removed
+$.players.$onAdd((player, sessionId) => {
+  console.log("Player added:", sessionId);
+});
+
+$.players.$onRemove((player, sessionId) => {
+  console.log("Player removed:", sessionId);
+});
+```
+
+The `$` prefix on callback names (`$onChange`, `$onAdd`, `$onRemove`) distinguishes them from fields on the state itself.
+
+<Note>
+  `getStateCallbacks()` is exported from `@colyseus/sdk` (client) and from `@colyseus/schema` as `getDecoderStateCallbacks()` internally. Always import it from `@colyseus/sdk` in client code.
+</Note>
+
+## Practical example: syncing player positions
+
+A complete client-side setup for a 2D game where multiple players move around:
+
+```typescript
+import { Client, getStateCallbacks } from "@colyseus/sdk";
+import type { GameState, Player } from "./GameState";
+
+const client = new Client("ws://localhost:2567");
+const room = await client.joinOrCreate<GameState>("game");
+
+const sprites: Map<string, Sprite> = new Map();
+
+const $ = getStateCallbacks(room);
+
+$.players.$onAdd((player: Player, sessionId: string) => {
+  // Create a sprite at the player's initial position
+  const sprite = new Sprite(player.x, player.y);
+  sprites.set(sessionId, sprite);
+  scene.add(sprite);
+
+  // Track position changes
+  player.listen("x", (x) => sprites.get(sessionId)?.setX(x));
+  player.listen("y", (y) => sprites.get(sessionId)?.setY(y));
+
+  // Highlight the local player
+  if (sessionId === room.sessionId) {
+    sprite.setColor("yellow");
+  }
+});
+
+$.players.$onRemove((_player: Player, sessionId: string) => {
+  sprites.get(sessionId)?.destroy();
+  sprites.delete(sessionId);
+});
+
+// Handle disconnection
+room.onLeave(() => {
+  sprites.forEach((sprite) => sprite.destroy());
+  sprites.clear();
+});
+```
+
+## React integration
+
+In React, combine `onStateChange` with `useState` to drive component re-renders from server state:
+
+```typescript
+import { useState, useEffect, useRef } from "react";
+import { Client } from "@colyseus/sdk";
+import type { GameState } from "./GameState";
+
+function useGameRoom(roomName: string) {
+  const [state, setState] = useState<GameState | null>(null);
+  const roomRef = useRef<any>(null);
+
+  useEffect(() => {
+    const client = new Client("ws://localhost:2567");
+
+    client.joinOrCreate<GameState>(roomName).then((room) => {
+      roomRef.current = room;
+
+      // Re-render whenever any part of state changes
+      room.onStateChange((newState) => {
+        // Create a shallow copy so React detects the change
+        setState(Object.assign(Object.create(Object.getPrototypeOf(newState)), newState));
+      });
+    });
+
+    return () => {
+      roomRef.current?.leave();
+    };
+  }, [roomName]);
+
+  return { state, room: roomRef.current };
+}
+```
+
+```typescript
+function GameHUD() {
+  const { state } = useGameRoom("game");
+
+  if (!state) return <p>Connecting...</p>;
+
+  return (
+    <div>
+      <p>Tick: {state.tick}</p>
+      <p>Players: {state.players.size}</p>
+    </div>
+  );
+}
+```
+
+<Note>
+  Schema instances are mutable objects — React will not detect a re-render if you pass `state` directly without creating a copy. The `Object.assign` pattern above produces a shallow clone that React treats as a new reference.
+</Note>
+
+## Callback registration timing
+
+Register callbacks before the first state patch arrives. The safest place is immediately after `joinOrCreate` or `join` resolves:
+
+```typescript
+const room = await client.joinOrCreate<GameState>("game");
+
+// Register all callbacks here — before any patches arrive
+room.state.players.onAdd((player, sessionId) => { /* ... */ });
+room.state.players.onRemove((player, sessionId) => { /* ... */ });
+room.state.listen("phase", (phase) => { /* ... */ });
+```
+
+<Warning>
+  Callbacks registered after the first patch is decoded will miss events for items that already existed in the initial state. Always wire up callbacks synchronously after joining.
+</Warning>

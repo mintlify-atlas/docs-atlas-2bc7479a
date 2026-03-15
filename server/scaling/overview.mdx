@@ -1,0 +1,142 @@
+---
+title: "Scaling overview"
+description: "Understand single-process, multi-process, and multi-server Colyseus deployments and when to use each."
+---
+
+Colyseus runs in a single Node.js process by default. As your game grows, that one process will
+eventually become a bottleneck. This page explains the three deployment tiers and when to move
+up to the next one.
+
+## Deployment tiers
+
+<CardGroup cols={3}>
+  <Card title="Single process" icon="server">
+    One Node.js process. Default configuration. Uses `LocalDriver` and `LocalPresence`.
+  </Card>
+  <Card title="Multi-process" icon="circle-nodes">
+    Multiple Node.js workers on one server, managed by PM2. Requires `RedisDriver` and
+    `RedisPresence`.
+  </Card>
+  <Card title="Multi-server" icon="network-wired">
+    Multiple servers behind a load balancer. Requires `RedisDriver`, `RedisPresence`, sticky
+    sessions, and a shared Redis instance.
+  </Card>
+</CardGroup>
+
+## When to scale
+
+A single Node.js process on a modern server can comfortably handle:
+
+- Up to ~1,000 concurrent users for compute-light rooms (e.g. turn-based games)
+- Up to ~200–500 concurrent users for compute-heavy rooms (e.g. real-time physics)
+
+Monitor CPU usage on your server. When it consistently exceeds 70–80% during peak traffic, it is
+time to scale. Room count and CCU per process are available from `matchMaker.stats.fetchAll()`.
+
+## Vertical scaling with PM2
+
+The simplest way to use all CPU cores on a single machine is PM2 cluster mode. Each worker is a
+full Colyseus process. The workers share room listings and coordinate matchmaking through Redis.
+
+```bash
+npm install -g pm2
+npm install @colyseus/redis-driver @colyseus/redis-presence
+```
+
+```javascript
+// ecosystem.config.js
+module.exports = {
+  apps: [
+    {
+      name: "colyseus",
+      script: "dist/index.js",
+      instances: "max", // one per CPU core, or a specific number
+      exec_mode: "cluster",
+      env: {
+        NODE_ENV: "production",
+        PORT: 2567,
+        REDIS_URI: "redis://localhost:6379",
+      },
+    },
+  ],
+};
+```
+
+```bash
+pm2 start ecosystem.config.js
+```
+
+<Note>
+  With PM2 cluster mode, all workers share the same port. The OS distributes incoming connections
+  across workers, but WebSocket connections must be sticky (same client always routed to the same
+  worker after the initial handshake). Without sticky sessions, reconnection and room communication
+  will break.
+</Note>
+
+## Horizontal scaling across servers
+
+To scale beyond a single machine, run Colyseus on multiple servers behind a load balancer. Each
+server needs Redis for coordination.
+
+Requirements:
+- A shared Redis instance reachable by all servers
+- A load balancer configured with **sticky sessions** (session affinity)
+- `publicAddress` set on each server so clients know which server to connect to
+
+See [Redis scaling](/server/scaling/redis) for full configuration details.
+
+## Dedicated matchmaker process
+
+For very high concurrency, you can dedicate one process to matchmaking only. That process handles
+`joinOrCreate()` / `join()` / `create()` requests but does not host any rooms.
+
+Use `isStandaloneMatchMaker` in the server setup:
+
+```typescript
+import { defineServer } from "@colyseus/core";
+import { RedisDriver } from "@colyseus/redis-driver";
+import { RedisPresence } from "@colyseus/redis-presence";
+
+const server = defineServer({
+  driver: new RedisDriver(process.env.REDIS_URI),
+  presence: new RedisPresence(process.env.REDIS_URI),
+  isStandaloneMatchMaker: process.env.IS_MATCHMAKER === "true",
+});
+
+server.listen(2567);
+```
+
+The standalone matchmaker accepts HTTP matchmaking requests and forwards room creation to the
+worker processes via IPC over Redis pub/sub. The worker processes handle the actual room lifecycle.
+
+## Process selection
+
+By default, Colyseus selects the worker with the fewest rooms when creating a new room:
+
+```typescript
+// Default implementation (simplified)
+selectProcessIdToCreateRoom = async () => {
+  const stats = await matchMaker.stats.fetchAll();
+  return stats.sort((a, b) => a.roomCount - b.roomCount)[0]?.processId;
+};
+```
+
+You can override this to implement region-aware routing or custom load balancing:
+
+```typescript
+import { matchMaker } from "@colyseus/core";
+
+matchMaker.selectProcessIdToCreateRoom = async (roomName, clientOptions) => {
+  const stats = await matchMaker.stats.fetchAll();
+  // Route to the least-loaded process in the same region
+  return stats
+    .filter(p => p.processId.startsWith(clientOptions.region))
+    .sort((a, b) => a.roomCount - b.roomCount)[0]?.processId;
+};
+```
+
+## Colyseus Cloud
+
+Colyseus Cloud manages scaling automatically. It handles Redis configuration, PM2, load balancing,
+sticky sessions, and `publicAddress` setup without any manual configuration. It is the recommended
+deployment option for teams that want to focus on game development rather than infrastructure.

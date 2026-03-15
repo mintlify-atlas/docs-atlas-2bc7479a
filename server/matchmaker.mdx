@@ -1,0 +1,210 @@
+---
+title: "MatchMaker API"
+description: "Create, join, and query rooms programmatically from server-side code using the matchMaker API."
+---
+
+The `matchMaker` object is exported from `@colyseus/core` and lets you create and manage rooms
+directly from server code—without a client connection. This is useful for seeding rooms at startup,
+creating private rooms from an HTTP endpoint, or orchestrating rooms from a background job.
+
+```typescript
+import { matchMaker } from "@colyseus/core";
+```
+
+## Creating and joining rooms
+
+### `matchMaker.joinOrCreate(roomName, options)`
+
+Joins an existing available room or creates a new one if none is found. Returns a seat reservation
+that can be forwarded to the client.
+
+```typescript
+const reservation = await matchMaker.joinOrCreate("game_room", { map: "forest" });
+```
+
+<ParamField path="roomName" type="string" required>
+  The room type name registered via `defineRoom()`.
+</ParamField>
+
+<ParamField path="options" type="object">
+  Options passed to the room's `onCreate()` and `onJoin()` handlers.
+</ParamField>
+
+---
+
+### `matchMaker.create(roomName, options)`
+
+Always creates a new room instance, regardless of existing rooms. Returns a seat reservation.
+
+```typescript
+const reservation = await matchMaker.create("game_room", { private: true });
+```
+
+---
+
+### `matchMaker.join(roomName, options)`
+
+Joins an existing available room. Throws an error if no room is found.
+
+```typescript
+const reservation = await matchMaker.join("game_room", {});
+```
+
+---
+
+### `matchMaker.joinById(roomId, options)`
+
+Joins a specific room by its `roomId`. Throws if the room is not found or is locked.
+
+```typescript
+const reservation = await matchMaker.joinById("abc123", { reconnectionToken: token });
+```
+
+<ParamField path="roomId" type="string" required>
+  The unique room instance identifier.
+</ParamField>
+
+---
+
+### `matchMaker.createRoom(roomName, options)`
+
+Creates a room and returns the raw `IRoomCache` object (not a seat reservation). Use this when you
+need to create the room without immediately reserving a seat.
+
+```typescript
+const roomCache = await matchMaker.createRoom("game_room", { map: "desert" });
+console.log(roomCache.roomId);
+```
+
+## Querying rooms
+
+### `matchMaker.query(conditions)`
+
+Queries the driver for all rooms matching the given conditions. Returns an array of `IRoomCache`
+objects.
+
+```typescript
+// Find all unlocked rooms of a given type
+const rooms = await matchMaker.query({ name: "game_room", locked: false });
+
+// Find rooms with custom metadata fields
+const rooms = await matchMaker.query({ name: "game_room", metadata: { map: "forest" } });
+```
+
+<ParamField path="conditions" type="Partial<IRoomCache>">
+  Key-value filter conditions. Supports any field on `IRoomCache`, including `metadata` subfields.
+</ParamField>
+
+---
+
+### `matchMaker.findOneRoomAvailable(roomName, options)`
+
+Finds a single public, unlocked room matching the given filter options. Returns `undefined` if none
+is found.
+
+```typescript
+const room = await matchMaker.findOneRoomAvailable("game_room", { map: "forest" });
+if (room) {
+  console.log("Found room:", room.roomId);
+}
+```
+
+## Process statistics
+
+### `matchMaker.stats.fetchAll()`
+
+Returns stats for all known server processes. Each entry includes the `processId`, `roomCount`, and
+`ccu` (concurrent users).
+
+```typescript
+const allStats = await matchMaker.stats.fetchAll();
+// [
+//   { processId: "abc", roomCount: 4, ccu: 17 },
+//   { processId: "def", roomCount: 2, ccu: 9 },
+// ]
+```
+
+This is the same data used internally to decide which process should host a new room. The process
+with the fewest rooms is selected by default.
+
+## Using matchMaker in HTTP routes
+
+A common pattern is exposing room creation through a custom HTTP endpoint. The client calls your
+HTTP endpoint, you create the room server-side, and return the seat reservation.
+
+```typescript
+import { listen } from "@colyseus/tools";
+import { matchMaker } from "@colyseus/core";
+
+listen({
+  rooms: { game_room: defineRoom(GameRoom) },
+  initializeExpress: (app) => {
+    app.post("/create-private-room", async (req, res) => {
+      try {
+        // Only authenticated users may create rooms
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: "unauthorized" });
+
+        const reservation = await matchMaker.create("game_room", {
+          private: true,
+          createdBy: userId,
+        });
+
+        res.json(reservation);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+  },
+});
+```
+
+The client then connects using the reservation:
+
+```typescript
+import { Client } from "colyseus.js";
+
+const client = new Client("ws://localhost:2567");
+const room = await client.consumeSeatReservation(reservation);
+```
+
+## The `IRoomCache` interface
+
+All matchMaker query results conform to `IRoomCache`:
+
+```typescript
+interface IRoomCache<Metadata = any> {
+  name: string;          // room type name
+  roomId: string;        // unique room instance ID
+  processId: string;     // server process ID hosting this room
+  clients: number;       // current number of connected clients
+  maxClients: number;    // maximum allowed clients
+  locked?: boolean;      // join requests are rejected when true
+  private?: boolean;     // excluded from join() / joinOrCreate() matching
+  publicAddress?: string; // address clients use to connect
+  unlisted?: boolean;    // excluded from lobby listings
+  metadata?: Metadata;   // arbitrary room metadata
+  createdAt?: Date;
+}
+```
+
+<Note>
+  `private` rooms cannot be found via `join()` or `joinOrCreate()`. Use `joinById()` to connect to
+  them directly.
+</Note>
+
+## Customizing process selection
+
+By default, Colyseus picks the process with the fewest rooms when creating a new room. You can
+override this logic:
+
+```typescript
+import { matchMaker } from "@colyseus/core";
+
+matchMaker.selectProcessIdToCreateRoom = async (roomName, clientOptions) => {
+  const stats = await matchMaker.stats.fetchAll();
+  // Custom selection logic — e.g. pick a specific region
+  return stats.find(p => p.processId.startsWith("us-east"))?.processId
+    ?? stats[0]?.processId;
+};
+```

@@ -1,0 +1,281 @@
+---
+title: "Client-server communication"
+description: "How messages flow between clients and rooms, including send, broadcast, and the binary protocol."
+---
+
+Beyond state synchronization, Colyseus provides a typed, bidirectional messaging system. Clients send messages to the room; the room responds with targeted messages to individual clients or broadcasts to everyone.
+
+## Sending messages from the client
+
+Use `room.send(type, payload)` from the client SDK:
+
+```typescript
+// Send a string type with a payload
+room.send("move", { x: 10, y: 0 });
+
+// Send a numeric type with no payload
+room.send(0);
+```
+
+`type` is a string or number that identifies the message on the server. The payload is any JSON-serializable value; it is encoded with **MessagePack** before transmission.
+
+## Receiving messages on the server
+
+Inside `onCreate`, register a handler for each message type with `this.onMessage()`:
+
+```typescript
+export class GameRoom extends Room {
+  onCreate() {
+    this.state = new GameState();
+
+    this.onMessage("move", (client, data: { x: number; y: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (player) {
+        player.x = data.x;
+        player.y = data.y;
+      }
+    });
+
+    this.onMessage("chat", (client, text: string) => {
+      this.broadcast("chat", { from: client.sessionId, text });
+    });
+  }
+}
+```
+
+### Wildcard handler
+
+Use `"*"` to catch every message type that does not have a dedicated handler:
+
+```typescript
+this.onMessage("*", (client, type, message) => {
+  console.log(`unhandled message type "${type}" from ${client.sessionId}`);
+});
+```
+
+### Numeric message types
+
+For performance-sensitive paths, numeric types avoid the overhead of string encoding:
+
+```typescript
+const MSG_FIRE = 1;
+const MSG_JUMP = 2;
+
+this.onMessage(MSG_FIRE, (client, data) => { /* ... */ });
+this.onMessage(MSG_JUMP, (client, data) => { /* ... */ });
+```
+
+### Message validation
+
+Use the `validate()` helper with any Standard Schema–compatible library (Zod, Valibot, ArkType, etc.) to validate and type-narrow the payload automatically:
+
+```typescript
+import { validate } from "@colyseus/core";
+import { z } from "zod";
+
+const MoveSchema = z.object({
+  x: z.number().min(-1000).max(1000),
+  y: z.number().min(-1000).max(1000),
+});
+
+export class GameRoom extends Room {
+  messages = {
+    move: validate(MoveSchema, (client, data) => {
+      // data.x and data.y are typed as numbers
+      const player = this.state.players.get(client.sessionId);
+      if (player) {
+        player.x = data.x;
+        player.y = data.y;
+      }
+    }),
+  };
+}
+```
+
+If validation fails, the client receives an error and the handler is not called.
+
+### The `messages` property
+
+As an alternative to calling `this.onMessage()` inside `onCreate`, you can declare all handlers as a `messages` map on the class body:
+
+```typescript
+export class GameRoom extends Room {
+  messages = {
+    move: (client: Client, data: { x: number; y: number }) => {
+      // handler
+    },
+    chat: (client: Client, text: string) => {
+      this.broadcast("chat", { from: client.sessionId, text });
+    },
+    // "_" is the wildcard fallback
+    _: (client: Client, type: string | number, message: any) => {
+      console.log("unhandled:", type);
+    },
+  };
+}
+```
+
+This style is equivalent to calling `this.onMessage()` in `onCreate` but is more concise and co-located with the class definition.
+
+## Sending messages from the server to a client
+
+Use `client.send(type, payload)` to send a message to a specific client:
+
+```typescript
+this.onMessage("ping", (client) => {
+  client.send("pong", { serverTime: Date.now() });
+});
+```
+
+To send after the next state patch (ensuring the message and the updated state arrive together):
+
+```typescript
+client.send("level-up", { newLevel: 5 }, { afterNextPatch: true });
+```
+
+### Sending raw bytes
+
+For custom binary payloads, use `client.sendBytes(type, buffer)`:
+
+```typescript
+const buffer = new Uint8Array([0x01, 0x02, 0x03]);
+client.sendBytes("raw", buffer);
+```
+
+On the client side, listen with `room.onMessage` and handle the buffer:
+
+```typescript
+room.onMessage("raw", (data: ArrayBuffer) => {
+  const view = new Uint8Array(data);
+  console.log(view);
+});
+```
+
+## Broadcasting to all clients
+
+Use `this.broadcast(type, payload, options?)` to send a message to every connected client:
+
+```typescript
+this.broadcast("game-over", { winner: client.sessionId });
+```
+
+### Excluding specific clients
+
+```typescript
+// Don't send back to the sender
+this.broadcast("player-moved", move, { except: client });
+
+// Exclude multiple clients
+this.broadcast("announcement", msg, { except: [client1, client2] });
+```
+
+### Deferred broadcast after state patch
+
+When a message is semantically linked to a state change, defer it until after the next patch. This ensures the client receives the updated state and the message in the same event loop tick:
+
+```typescript
+this.broadcast("round-over", { scores }, { afterNextPatch: true });
+```
+
+## Listening to messages on the client
+
+Register listeners on the client-side `room` object:
+
+```typescript
+const room = await client.joinOrCreate("game");
+
+room.onMessage("chat", (data) => {
+  console.log(data.from, ":", data.text);
+});
+
+room.onMessage("game-over", (data) => {
+  alert(`Winner: ${data.winner}`);
+});
+```
+
+## The binary protocol
+
+Colyseus uses a compact binary framing protocol over WebSocket. Each frame starts with a 1-byte opcode that identifies the message category:
+
+| Opcode | Name | Direction | Description |
+|---|---|---|---|
+| `1` | `JOIN_ROOM` | Server → Client | Sent after seat claim; contains reconnection token and serializer ID |
+| `2` | `LEAVE_ROOM` | Client → Server | Client requests to leave |
+| `3` | `ROOM_DATA` | Both | Application message (type + msgpack payload) |
+| `4` | `ROOM_STATE` | Server → Client | Full state snapshot (on first join) |
+| `5` | `ROOM_STATE_PATCH` | Server → Client | Delta patch since last snapshot |
+| `6` | `ROOM_DATA_BYTES` | Both | Raw binary message |
+| `9` | `ERROR` | Server → Client | Error code + message |
+| `10` | `PING` | Server → Client | Keep-alive |
+
+Application messages (`ROOM_DATA`) carry the message type encoded as either a length-prefixed UTF-8 string or a variable-length integer, followed by the msgpack-encoded payload.
+
+<Note>
+You do not need to interact with the protocol directly. The client SDK and the server handle framing automatically. This information is useful if you are implementing a custom client or debugging raw frames.
+</Note>
+
+## Rate limiting
+
+To prevent misbehaving or abusive clients from flooding the server, set `maxMessagesPerSecond` on the room:
+
+```typescript
+onCreate() {
+  this.maxMessagesPerSecond = 20; // disconnect clients that send more than 20 msg/s
+}
+```
+
+Clients that exceed the limit are disconnected immediately.
+
+## Disconnecting a client from the server
+
+Call `client.leave(code, reason)` to forcibly disconnect a client:
+
+```typescript
+this.onMessage("cheat", (client) => {
+  client.leave(4001, "Cheating detected");
+});
+```
+
+The close code is forwarded to the client's `onLeave` callback.
+
+## Type-safe messages
+
+Colyseus supports end-to-end type inference for messages. Define the message map in the `Client` type parameter of your room:
+
+```typescript
+type RoomMessages = {
+  move: { x: number; y: number };
+  chat: string;
+  "game-over": { winner: string };
+};
+
+export class GameRoom extends Room<{
+  state: GameState;
+  client: Client<{ messages: RoomMessages }>;
+}> {
+  messages = {
+    move: (client: Client, data: RoomMessages["move"]) => {
+      // data.x and data.y are inferred
+    },
+  };
+}
+```
+
+The same type map is exported via `SDKTypes` and picked up by the client SDK, giving you autocomplete on `room.send("...", payload)`.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="State sync" icon="arrows-rotate" href="/concepts/state-sync">
+    How automatic delta patches complement application messages.
+  </Card>
+  <Card title="Rooms" icon="door-open" href="/concepts/rooms">
+    Room lifecycle and the server-side Client API.
+  </Card>
+  <Card title="Room messages API" icon="server" href="/server/room-messages">
+    Full server-side reference for `onMessage`, `broadcast`, and `client.send`.
+  </Card>
+  <Card title="Client SDK" icon="code" href="/client/room">
+    Full client-side reference for `room.send`, `room.onMessage`, and error handling.
+  </Card>
+</CardGroup>

@@ -1,0 +1,122 @@
+---
+title: "State schema overview"
+description: "What @colyseus/schema is, how it integrates with Colyseus rooms, and why it outperforms plain JSON for multiplayer state sync."
+---
+
+`@colyseus/schema` is a binary serialization library built specifically for Colyseus. It tracks mutations on your state objects and encodes only the fields that changed into a compact binary diff — called a **patch** — that is broadcast to every connected client on each tick.
+
+## Why Schema instead of plain JSON
+
+When you assign a plain JavaScript object to `this.state`, Colyseus serializes the entire state as JSON on every patch tick and sends it to every client. That works fine for tiny states, but it does not scale:
+
+| | `@colyseus/schema` | Plain object (JSON) |
+|---|---|---|
+| Wire format | Binary delta (only changed fields) | Full JSON every tick |
+| Bandwidth | Proportional to change rate | Proportional to state size |
+| Client callbacks | `onAdd`, `onRemove`, `onChange`, `listen()` | None — only `onStateChange` |
+| Type safety | TypeScript generics + `InferState` | `any` |
+| Code generation | C#, Lua, Haxe, Godot targets | Not available |
+
+For any multiplayer game with more than a handful of fields, Schema is the right choice.
+
+## How it integrates with Colyseus
+
+When you assign a `Schema` instance to `this.state`, the room's internal `SchemaSerializer` is activated automatically. From that point:
+
+1. Every field mutation on the state tree is recorded in an internal change log.
+2. On each `patchRate` tick, `broadcastPatch()` encodes the change log into a binary diff and sends it to all connected clients.
+3. New clients joining the room receive the full state encoded as binary on their first connection, then receive only diffs going forward.
+4. The client SDK decodes each patch and fires the appropriate callbacks (`onAdd`, `onRemove`, `onChange`, `listen()`).
+
+<Note>
+  `this.setState(state)` still works but is deprecated. Assign `this.state` directly inside `onCreate()`.
+</Note>
+
+## Quick example
+
+### 1. Define your schema (server)
+
+```typescript
+import { Schema, type, MapSchema } from "@colyseus/schema";
+
+class Player extends Schema {
+  @type("string") name: string = "";
+  @type("float32") x: number = 0;
+  @type("float32") y: number = 0;
+  @type("uint16") score: number = 0;
+}
+
+class GameState extends Schema {
+  @type({ map: Player }) players = new MapSchema<Player>();
+  @type("uint32") tick: number = 0;
+}
+```
+
+### 2. Assign it in your room
+
+```typescript
+import { Room, Client } from "@colyseus/core";
+
+export class GameRoom extends Room<{ state: GameState }> {
+  onCreate() {
+    this.state = new GameState();
+
+    this.onMessage("move", (client, data: { x: number; y: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (player) {
+        player.x = data.x;
+        player.y = data.y;
+      }
+    });
+  }
+
+  onJoin(client: Client) {
+    const player = new Player();
+    player.name = client.sessionId;
+    this.state.players.set(client.sessionId, player);
+  }
+
+  onLeave(client: Client) {
+    this.state.players.delete(client.sessionId);
+  }
+}
+```
+
+### 3. Listen on the client
+
+```typescript
+import { Client } from "@colyseus/sdk";
+
+const colyseus = new Client("ws://localhost:2567");
+const room = await colyseus.joinOrCreate("game");
+
+room.state.players.onAdd((player, sessionId) => {
+  console.log("player joined:", sessionId);
+
+  player.listen("x", (x) => moveSprite(sessionId, x, player.y));
+  player.listen("y", (y) => moveSprite(sessionId, player.x, y));
+});
+
+room.state.players.onRemove((_player, sessionId) => {
+  removeSprite(sessionId);
+});
+```
+
+That is the full loop: define → assign → mutate on server → receive callbacks on client. No manual serialization, no polling.
+
+## Explore further
+
+<CardGroup cols={2}>
+  <Card title="Schema definition" icon="code" href="/state/schema-definition">
+    Primitive types, nested schemas, the `@type()` decorator, and the functional API.
+  </Card>
+  <Card title="Client-side callbacks" icon="bell" href="/state/callbacks">
+    `onChange`, `onAdd`, `onRemove`, `listen()`, and `getStateCallbacks()`.
+  </Card>
+  <Card title="Collections" icon="layer-group" href="/state/collections">
+    `MapSchema`, `ArraySchema`, `SetSchema`, and `CollectionSchema`.
+  </Card>
+  <Card title="Room state API" icon="server" href="/server/room-state">
+    Setting `patchRate`, calling `broadcastPatch()`, and `onBeforePatch()`.
+  </Card>
+</CardGroup>

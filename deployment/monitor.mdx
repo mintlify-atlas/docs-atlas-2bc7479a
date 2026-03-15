@@ -1,0 +1,144 @@
+---
+title: "Monitor dashboard"
+description: "Set up @colyseus/monitor, a real-time web dashboard for inspecting active rooms, connected clients, room state, and server resource usage."
+---
+
+`@colyseus/monitor` is a web dashboard that lets you inspect your Colyseus server in real time. You can view active rooms, their state, the clients connected to each room, and overall CPU and memory usage.
+
+## Install
+
+```bash
+npm install --save @colyseus/monitor
+```
+
+## Setup
+
+The monitor is an Express router. Mount it on your Express application:
+
+```typescript
+import { listen } from "@colyseus/tools";
+import { defineRoom } from "@colyseus/core";
+import { monitor } from "@colyseus/monitor";
+import { GameRoom } from "./rooms/GameRoom";
+
+listen({
+  rooms: {
+    game: defineRoom(GameRoom),
+  },
+  initializeExpress: (app) => {
+    // Mount the monitor at /colyseus
+    app.use("/colyseus", monitor());
+  },
+});
+```
+
+Once your server is running, open `http://localhost:2567/colyseus` in a browser to access the dashboard.
+
+### Using defineServer directly
+
+If you configure Express via `defineServer()` rather than `@colyseus/tools`:
+
+```typescript
+import express from "express";
+import { defineServer, defineRoom } from "@colyseus/core";
+import { WebSocketTransport } from "@colyseus/ws-transport";
+import { monitor } from "@colyseus/monitor";
+import { GameRoom } from "./rooms/GameRoom";
+
+const server = defineServer({
+  transport: new WebSocketTransport(),
+  rooms: { game: defineRoom(GameRoom) },
+  express: (app) => {
+    app.use("/colyseus", monitor());
+  },
+});
+
+server.listen(2567);
+```
+
+## Dashboard features
+
+The monitor dashboard provides:
+
+- **Room list**: all active rooms with room ID, name, connected clients, max clients, lock status, and elapsed time
+- **Room inspection**: click any room to view its current state as a live JSON tree
+- **Remote method calls**: invoke methods on a specific room directly from the dashboard
+- **System metrics**: real-time CPU usage percentage and memory consumption
+- **Connection count**: total connected clients across all rooms
+
+## Customizing columns
+
+By default the room list shows `roomId`, `name`, `clients`, `maxClients`, `locked`, and `elapsedTime`. Pass a `columns` array to `monitor()` to change which columns appear:
+
+```typescript
+import { monitor } from "@colyseus/monitor";
+
+app.use("/colyseus", monitor({
+  columns: [
+    'roomId',
+    'name',
+    'clients',
+    'maxClients',
+    'locked',
+    'elapsedTime',
+    { metadata: 'mode' }, // expose a specific metadata field as a column
+    'publicAddress',
+  ],
+}));
+```
+
+The `{ metadata: 'key' }` syntax reads from a room's `metadata` object and displays that field as a column.
+
+## Securing the monitor
+
+<Warning>
+  The monitor exposes your room state and allows remote method calls. Always protect the `/colyseus` route before deploying to production.
+</Warning>
+
+Add HTTP Basic Auth or any Express middleware before the monitor route:
+
+<Tabs>
+  <Tab title="HTTP Basic Auth">
+    ```bash
+    npm install --save express-basic-auth
+    ```
+
+    ```typescript
+    import basicAuth from "express-basic-auth";
+    import { monitor } from "@colyseus/monitor";
+
+    app.use("/colyseus",
+      basicAuth({
+        users: { admin: process.env.MONITOR_PASSWORD },
+        challenge: true,
+      }),
+      monitor()
+    );
+    ```
+  </Tab>
+  <Tab title="JWT middleware">
+    ```typescript
+    import { monitor } from "@colyseus/monitor";
+
+    function requireAuth(req, res, next) {
+      // verify your JWT or session token
+      if (!isAuthenticated(req)) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+      next();
+    }
+
+    app.use("/colyseus", requireAuth, monitor());
+    ```
+  </Tab>
+</Tabs>
+
+## API endpoints
+
+The monitor mounts the following REST endpoints under `/colyseus/api`:
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/` | Returns room list, CPU, memory, and total connections. |
+| `GET` | `/api/room?roomId=<id>` | Returns the inspect data (state) of a specific room. |
+| `GET` | `/api/room/call?roomId=<id>&method=<m>&args=<json>` | Calls a method on a specific room and returns the result. |

@@ -1,0 +1,163 @@
+---
+title: "Installation"
+description: "Install Colyseus, scaffold a new project, or add it manually to an existing Node.js application."
+---
+
+## Requirements
+
+<Note>
+Colyseus requires **Node.js 20.x or later**. Check your version with `node --version` before proceeding.
+</Note>
+
+## Scaffold a new project
+
+The fastest way to get started is the official project generator. It creates a ready-to-run Colyseus server with TypeScript, a sample room, and development tooling pre-configured.
+
+```bash
+npm create colyseus-app@latest ./my-game
+```
+
+The generator will ask a few questions (project name, whether to include the playground, etc.) and then install all dependencies.
+
+Once it finishes:
+
+```bash
+cd my-game
+npm start
+```
+
+Your server is now running at `http://localhost:2567`.
+
+## Manual installation
+
+If you are adding Colyseus to an existing project, install the packages you need directly.
+
+### Option 1 — The `colyseus` convenience package
+
+The `colyseus` package re-exports `@colyseus/core`, `@colyseus/tools`, `@colyseus/ws-transport`, `@colyseus/auth`, `@colyseus/monitor`, `@colyseus/playground`, and the Redis driver and presence packages in one install.
+
+<CodeGroup>
+
+```bash npm
+npm install colyseus
+```
+
+```bash yarn
+yarn add colyseus
+```
+
+```bash pnpm
+pnpm add colyseus
+```
+
+</CodeGroup>
+
+### Option 2 — Individual packages
+
+If you prefer a leaner install, add only what you need:
+
+<CodeGroup>
+
+```bash npm
+npm install @colyseus/core @colyseus/ws-transport
+```
+
+```bash yarn
+yarn add @colyseus/core @colyseus/ws-transport
+```
+
+```bash pnpm
+pnpm add @colyseus/core @colyseus/ws-transport
+```
+
+</CodeGroup>
+
+`@colyseus/core` contains the `Room`, `Server`, matchmaker, presence, and all core abstractions. `@colyseus/ws-transport` provides the default WebSocket transport layer; it is a peer dependency of `@colyseus/core` and must be installed explicitly when using individual packages.
+
+### Optional packages
+
+| Package | Purpose |
+|---|---|
+| `@colyseus/tools` | `config()` + `listen()` helper for the standard project structure |
+| `@colyseus/schema` | State serialization and delta-patching |
+| `@colyseus/monitor` | Web-based room inspector |
+| `@colyseus/playground` | In-browser room testing UI |
+| `@colyseus/auth` | JWT + OAuth authentication |
+| `@colyseus/redis-driver` | Distributed matchmaking driver |
+| `@colyseus/redis-presence` | Distributed presence via Redis |
+| `@colyseus/uwebsockets-transport` | High-performance uWebSockets.js transport |
+| `@colyseus/sdk` | JavaScript / TypeScript client SDK |
+
+## Project structure
+
+A project scaffolded with `npm create colyseus-app@latest` looks like this:
+
+```
+my-game/
+├── src/
+│   ├── app.config.ts      # Server configuration (rooms, routes, transport)
+│   └── rooms/
+│       └── MyRoom.ts      # Your room class
+├── package.json
+└── tsconfig.json
+```
+
+### `src/app.config.ts`
+
+This is the entry point. It uses `@colyseus/tools` to wire everything together:
+
+```typescript
+import config, { listen } from "@colyseus/tools";
+import { defineRoom } from "@colyseus/core";
+import { MyRoom } from "./rooms/MyRoom.ts";
+
+export const server = config({
+  rooms: {
+    my_room: defineRoom(MyRoom),
+  },
+});
+
+listen(server);
+```
+
+`config()` validates your options and returns a configuration object. `listen()` builds the `Server`, initializes the transport, and starts listening (default port: `2567`, overridable with the `PORT` environment variable).
+
+### `src/rooms/MyRoom.ts`
+
+Each room is a class that extends `Room`. The scaffold generates a simple example room to get you started.
+
+<Tip>
+When deploying to **Colyseus Cloud**, `@colyseus/tools` automatically configures Redis-backed presence and the distributed driver when multiple CPU cores are available. No code changes are required.
+</Tip>
+
+## TypeScript configuration
+
+Colyseus is written in TypeScript and the scaffolded project includes a `tsconfig.json`. If you are configuring TypeScript manually, enable `experimentalDecorators` and `emitDecoratorMetadata` when using the decorator-based `@colyseus/schema` API:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "strict": true
+  }
+}
+```
+
+<Note>
+The newer functional `schema()` API from `@colyseus/schema` does not require decorator support. The decorator-based API (`@type`, `@filter`) remains available for projects that prefer it.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/getting-started/quickstart">
+    Build and connect your first game room step by step.
+  </Card>
+  <Card title="Core concepts" icon="book" href="/concepts/architecture">
+    Understand rooms, state sync, and the matchmaking flow.
+  </Card>
+</CardGroup>

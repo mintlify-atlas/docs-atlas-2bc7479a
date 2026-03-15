@@ -1,0 +1,295 @@
+---
+title: "Room API"
+description: "The Room class returned by join methods: properties, sending and receiving messages, state synchronization, and leave/reconnect lifecycle."
+---
+
+Every successful call to `client.joinOrCreate()`, `client.join()`, `client.create()`, `client.joinById()`, or `client.reconnect()` resolves to a `Room` instance. The room represents the live WebSocket connection to a single server-side room and carries the synchronized state.
+
+## Properties
+
+### roomId
+
+```typescript
+room.roomId: string
+```
+
+The unique nine-character alphanumeric identifier of the server-side room instance.
+
+### name
+
+```typescript
+room.name: string
+```
+
+The room type name passed to the matchmaking call (for example `"game"`).
+
+### sessionId
+
+```typescript
+room.sessionId: string
+```
+
+The unique session ID assigned by the server to this client. Corresponds to `client.sessionId` inside server-side room handlers.
+
+### reconnectionToken
+
+```typescript
+room.reconnectionToken: string
+```
+
+A compound token with the format `"roomId:token"`. Persist this value (for example in `localStorage`) and pass it to `client.reconnect()` to restore the session after a page reload or app restart.
+
+### state
+
+```typescript
+room.state: State
+```
+
+The current synchronized state object. Updated in-place on every state patch received from the server. Listen to `onStateChange` to react to updates.
+
+### connection
+
+```typescript
+room.connection: Connection
+```
+
+The underlying `Connection` object wrapping the WebSocket (or WebTransport) connection. Use `room.connection.isOpen` to check connectivity.
+
+### reconnection
+
+```typescript
+room.reconnection: ReconnectionOptions
+```
+
+Controls the automatic reconnection behavior:
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Set to `false` to disable automatic reconnection entirely. |
+| `maxRetries` | `15` | Maximum number of reconnection attempts before giving up. |
+| `delay` | `100` ms | Initial delay between attempts. |
+| `minDelay` | `100` ms | Minimum delay between attempts. |
+| `maxDelay` | `5000` ms | Maximum delay between attempts (cap for exponential backoff). |
+| `minUptime` | `5000` ms | Minimum time the room must have been connected before auto-reconnect is attempted. |
+| `backoff` | exponential | Function `(attempt, delay) => number` used to calculate retry delay. |
+
+```typescript
+// Disable automatic reconnection
+room.reconnection.enabled = false;
+
+// Increase maximum retries
+room.reconnection.maxRetries = 30;
+```
+
+---
+
+## Sending messages
+
+### send
+
+Sends a typed message to the server. The message is serialized with MessagePack.
+
+```typescript
+room.send(type, payload?)
+```
+
+<ParamField path="type" type="string | number" required>
+  The message type identifier. Must match a type your server handles via `this.onMessage(type, ...)` in the room.
+</ParamField>
+
+<ParamField path="payload" type="any">
+  Optional payload serialized with MessagePack. Can be any JSON-compatible value.
+</ParamField>
+
+```typescript
+// String message type
+room.send("move", { direction: "up", speed: 5 });
+
+// Numeric message type
+room.send(1, { x: 10, y: 20 });
+
+// No payload
+room.send("ready");
+```
+
+<Note>
+If the connection is closed during reconnection, `send()` buffers up to 10 messages. They are flushed automatically when the connection is re-established.
+</Note>
+
+### sendUnreliable
+
+Sends a message over an unreliable channel (WebTransport datagrams when using the `h3` protocol). Falls back silently if the connection is not open. Use this for high-frequency, low-priority data such as cursor positions.
+
+```typescript
+room.sendUnreliable("cursor", { x: mouseX, y: mouseY });
+```
+
+### sendBytes
+
+Sends a raw `Uint8Array` payload tagged with a type identifier. Useful for custom binary protocols.
+
+```typescript
+room.sendBytes("map_chunk", new Uint8Array(binaryData));
+```
+
+### ping
+
+Measures the round-trip time to the server. Calls the callback with the latency in milliseconds.
+
+```typescript
+room.ping((ms) => {
+  console.log(`Ping: ${ms}ms`);
+});
+```
+
+---
+
+## Receiving messages
+
+### onMessage
+
+Registers a callback for a specific message type sent from the server.
+
+```typescript
+room.onMessage(type, callback)
+```
+
+```typescript
+// Listen for a specific message type
+room.onMessage("player_joined", (payload) => {
+  console.log("Player joined:", payload.name);
+});
+
+// Listen for all message types
+room.onMessage("*", (type, payload) => {
+  console.log("Message:", type, payload);
+});
+```
+
+`onMessage` returns an unsubscribe function:
+
+```typescript
+const unsubscribe = room.onMessage("chat", (msg) => {
+  renderChatMessage(msg);
+});
+
+// Later: stop listening
+unsubscribe();
+```
+
+---
+
+## Event signals
+
+### onStateChange
+
+Fired whenever a state update is received from the server (full state or a delta patch).
+
+```typescript
+room.onStateChange((state) => {
+  // state is the updated root state object
+  renderPlayers(state.players);
+});
+```
+
+To receive the state exactly once:
+
+```typescript
+room.onStateChange.once((state) => {
+  console.log("Initial state received", state);
+});
+```
+
+### onError
+
+Fired when the server sends an error message or the WebSocket emits an error event.
+
+```typescript
+room.onError((code, message) => {
+  console.error(`Room error ${code}: ${message}`);
+});
+```
+
+### onLeave
+
+Fired when the connection is cleanly closed — either by the server, by calling `room.leave()`, or after all reconnection attempts are exhausted.
+
+```typescript
+room.onLeave((code) => {
+  console.log("Left room with code:", code);
+});
+```
+
+### onReconnect
+
+Fired when the automatic reconnection succeeds.
+
+```typescript
+room.onReconnect(() => {
+  console.log("Reconnected successfully");
+});
+```
+
+### onDrop
+
+Fired each time the connection drops unexpectedly (before reconnection is attempted). Use this to show a "Reconnecting..." indicator.
+
+```typescript
+room.onDrop((code, reason) => {
+  showReconnectingOverlay();
+});
+```
+
+---
+
+## Leaving a room
+
+```typescript
+room.leave(consented?: boolean): Promise<number>
+```
+
+<ParamField path="consented" type="boolean">
+  When `true` (default), sends a `LEAVE_ROOM` protocol message and waits for the server to acknowledge before closing. When `false`, closes the connection immediately without notifying the server.
+</ParamField>
+
+```typescript
+// Graceful leave
+await room.leave();
+
+// Immediate close
+await room.leave(false);
+```
+
+`leave()` resolves with the WebSocket close code once the connection is fully closed.
+
+---
+
+## State callbacks with getStateCallbacks
+
+For fine-grained reactivity on Schema state, import `getStateCallbacks` and attach listeners to individual fields or collection items rather than re-rendering the whole scene on every state change.
+
+```typescript
+import { getStateCallbacks } from "@colyseus/sdk";
+
+const room = await client.joinOrCreate("game");
+const $ = getStateCallbacks(room);
+
+// Detect when a player is added to the MapSchema
+$(room.state).players.onAdd((player, sessionId) => {
+  console.log("Player added:", sessionId);
+
+  // Track position changes on that specific player
+  $(player).position.onChange(() => {
+    updateSprite(sessionId, player.position.x, player.position.y);
+  });
+});
+
+$(room.state).players.onRemove((player, sessionId) => {
+  console.log("Player removed:", sessionId);
+  removeSprite(sessionId);
+});
+```
+
+<Tip>
+Use `getStateCallbacks` over a top-level `onStateChange` listener whenever you need to react to changes in specific nested properties. It avoids unnecessary work by firing only when the relevant field actually changes.
+</Tip>

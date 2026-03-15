@@ -1,97 +1,104 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Colyseus — Multiplayer Framework for Node.js"
+description: "Build authoritative multiplayer games with real-time state synchronization, room-based matchmaking, and multi-platform client SDKs."
 ---
 
-## Setting up
+<img
+  src="https://media.brand.dev/f3239a9d-7a12-4a94-8082-531c7bb3edea.png"
+  alt="Colyseus"
+  style={{ maxWidth: "280px", marginBottom: "2rem" }}
+/>
 
-Get your documentation site up and running in minutes.
+## Build multiplayer games faster
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+Colyseus is an authoritative multiplayer game server framework for Node.js. Define your game state on the server — it synchronizes automatically to all clients, delta-compressed and binary-encoded in real time.
 
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/getting-started/quickstart">
+    Create your first Colyseus server in under 5 minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/getting-started/installation">
+    Install Colyseus and configure your project.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="book" href="/concepts/architecture">
+    Understand rooms, state sync, and matchmaking.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Client SDK" icon="code" href="/client/overview">
+    Connect from TypeScript, Unity, Godot, and more.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Why developers choose Colyseus
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Real-time state sync" icon="bolt">
+    Define your state on the server and it automatically synchronizes to all clients — delta-compressed and binary-encoded for minimal bandwidth.
+  </Card>
+  <Card title="Built-in matchmaking" icon="users">
+    Room-based architecture with filtering, queuing, and reconnection support out of the box.
+  </Card>
+  <Card title="Scalable" icon="chart-line">
+    Go from 10 to 10,000+ concurrent users by scaling vertically or horizontally with Redis and load balancers.
+  </Card>
+  <Card title="Cheat-proof by design" icon="shield">
+    Authoritative server model ensures all game logic runs on the server, not the client.
+  </Card>
+  <Card title="Familiar tools" icon="wrench">
+    Built on Node.js and TypeScript with a simple, familiar API on both server and client.
+  </Card>
+  <Card title="MIT licensed" icon="check">
+    Free forever — even for commercial games. No royalties, no per-seat pricing.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Get started in seconds
 
-## Need inspiration?
+```bash
+npm create colyseus-app@latest ./my-server
+cd my-server
+npm start
+```
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+This scaffolds a complete Colyseus server with a sample room, TypeScript configuration, and development tooling ready to go.
+
+## Supported platforms
+
+Connect to your Colyseus server from any major game engine or web platform:
+
+<CardGroup cols={3}>
+  <Card title="TypeScript / JS" icon="js" href="/client/overview">
+    Web, Node.js, React
+  </Card>
+  <Card title="Unity" icon="unity" href="/client/unity">
+    Unity3D C# SDK
+  </Card>
+  <Card title="Godot" icon="gamepad" href="/client/godot">
+    GDScript / C# SDK
+  </Card>
+  <Card title="GameMaker" icon="gamepad-2" href="/client/gamemaker">
+    GML SDK
+  </Card>
+  <Card title="Defold" icon="circle-play" href="/client/defold">
+    Lua SDK
+  </Card>
+  <Card title="Construct 3" icon="puzzle-piece" href="/client/construct3">
+    Visual scripting addon
+  </Card>
+</CardGroup>
+
+## Explore the documentation
+
+<CardGroup cols={2}>
+  <Card title="Server API" icon="server" href="/server/overview">
+    Configure rooms, transports, presence, drivers, and authentication on the server.
+  </Card>
+  <Card title="State Schema" icon="database" href="/state/overview">
+    Define synchronized state with `@colyseus/schema` — strongly typed, delta-compressed structures.
+  </Card>
+  <Card title="Deployment" icon="cloud-arrow-up" href="/deployment/overview">
+    Deploy to Colyseus Cloud or self-host with Docker, PM2, and Redis.
+  </Card>
+  <Card title="Monitoring" icon="chart-bar" href="/deployment/monitor">
+    Inspect running rooms, connected clients, and server stats in real time.
+  </Card>
+</CardGroup>

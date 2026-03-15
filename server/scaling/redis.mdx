@@ -1,0 +1,229 @@
+---
+title: "Redis scaling"
+description: "Configure RedisDriver and RedisPresence to run Colyseus across multiple processes and servers."
+---
+
+Redis is the backbone of multi-process Colyseus deployments. `RedisPresence` handles pub/sub
+messaging between processes, and `RedisDriver` stores the shared room listing that all processes
+query during matchmaking.
+
+## Prerequisites
+
+- A running Redis instance (version 6+ recommended)
+- Redis accessible from all Colyseus processes
+
+## Install packages
+
+```bash
+npm install @colyseus/redis-driver @colyseus/redis-presence
+```
+
+## Configure the server
+
+```typescript
+import { defineServer } from "@colyseus/core";
+import { RedisDriver } from "@colyseus/redis-driver";
+import { RedisPresence } from "@colyseus/redis-presence";
+
+const server = defineServer({
+  driver: new RedisDriver(process.env.REDIS_URI),
+  presence: new RedisPresence(process.env.REDIS_URI),
+});
+
+server.listen(Number(process.env.PORT) || 2567);
+```
+
+Set `REDIS_URI` in your environment:
+
+```bash
+REDIS_URI=redis://localhost:6379
+# or with authentication
+REDIS_URI=redis://:password@my-redis-host:6379
+```
+
+## Redis connection options
+
+Both `RedisDriver` and `RedisPresence` accept the same constructor arguments as
+[ioredis](https://github.com/redis/ioredis):
+
+```typescript
+// URL string
+new RedisDriver("redis://:password@host:6379")
+
+// ioredis options object
+new RedisDriver({
+  host: "my-redis",
+  port: 6379,
+  password: "secret",
+  tls: {},
+})
+
+// Redis Cluster
+new RedisDriver(
+  [
+    { host: "redis-node-1", port: 6379 },
+    { host: "redis-node-2", port: 6379 },
+  ],
+  { redisOptions: { password: "secret" } }
+)
+```
+
+`RedisPresence` uses the same API and the same constructor arguments.
+
+## PM2 cluster mode
+
+PM2 cluster mode runs one Colyseus worker per CPU core, all sharing the same port.
+
+<Steps>
+  <Step title="Create an ecosystem file">
+    ```javascript
+    // ecosystem.config.js
+    module.exports = {
+      apps: [
+        {
+          name: "colyseus",
+          script: "dist/index.js",
+          instances: "max",
+          exec_mode: "cluster",
+          env: {
+            NODE_ENV: "production",
+            PORT: 2567,
+            REDIS_URI: "redis://localhost:6379",
+          },
+        },
+      ],
+    };
+    ```
+  </Step>
+  <Step title="Set publicAddress per process">
+    Each worker needs to announce its own address so clients can connect to the correct process
+    after a seat reservation. With PM2, use the `PM2_INSTANCE_ID` environment variable:
+
+    ```typescript
+    import { defineServer } from "@colyseus/core";
+    import { RedisDriver } from "@colyseus/redis-driver";
+    import { RedisPresence } from "@colyseus/redis-presence";
+
+    const instanceId = process.env.pm_id || "0";
+
+    const server = defineServer({
+      driver: new RedisDriver(process.env.REDIS_URI),
+      presence: new RedisPresence(process.env.REDIS_URI),
+      publicAddress: `my-server.example.com:${2567 + Number(instanceId)}`,
+    });
+
+    server.listen(2567 + Number(instanceId));
+    ```
+
+    When all workers share a single port behind the OS or a load balancer, set `publicAddress`
+    to the load balancer address instead.
+  </Step>
+  <Step title="Start the cluster">
+    ```bash
+    pm2 start ecosystem.config.js
+    pm2 save          # persist process list across reboots
+    pm2 startup       # configure system startup
+    ```
+  </Step>
+</Steps>
+
+## Load balancer configuration
+
+<Warning>
+  WebSocket connections require **sticky sessions** (session affinity). Without sticky sessions,
+  after the matchmaker issues a seat reservation, the client's upgrade request may land on a
+  different worker than the one that created the seat—causing the connection to be rejected.
+</Warning>
+
+Configure your load balancer to route all requests from the same client to the same upstream:
+
+<Tabs>
+  <Tab title="nginx">
+    ```nginx
+    upstream colyseus {
+        ip_hash; # sticky sessions by client IP
+        server 127.0.0.1:2567;
+        server 127.0.0.1:2568;
+        server 127.0.0.1:2569;
+        server 127.0.0.1:2570;
+    }
+
+    server {
+        listen 80;
+
+        location / {
+            proxy_pass http://colyseus;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="AWS ALB">
+    Enable **Stickiness** on the target group with a duration that matches your session lifetime.
+    Use `lb_cookie` stickiness for HTTP/HTTPS listeners, and `source_ip` for TCP/WebSocket.
+  </Tab>
+  <Tab title="HAProxy">
+    ```
+    backend colyseus
+        balance source
+        server worker0 127.0.0.1:2567 check
+        server worker1 127.0.0.1:2568 check
+        server worker2 127.0.0.1:2569 check
+        server worker3 127.0.0.1:2570 check
+    ```
+  </Tab>
+</Tabs>
+
+## Multiple servers
+
+To scale across multiple machines, run the same configuration on each server and point all of them
+at the same Redis instance:
+
+```typescript
+// server-A.ts
+const server = defineServer({
+  driver: new RedisDriver(process.env.REDIS_URI),
+  presence: new RedisPresence(process.env.REDIS_URI),
+  publicAddress: "server-a.example.com",
+});
+```
+
+```typescript
+// server-B.ts
+const server = defineServer({
+  driver: new RedisDriver(process.env.REDIS_URI),
+  presence: new RedisPresence(process.env.REDIS_URI),
+  publicAddress: "server-b.example.com",
+});
+```
+
+`publicAddress` tells the matchmaker which address the client should connect to when a seat
+reservation is issued for a room on that server. Each server must have a unique, client-reachable
+address.
+
+## Health checks
+
+Colyseus automatically performs health checks at startup and when remote room requests time out.
+A process that fails a health check has its rooms removed from the driver so clients are not
+routed to dead processes.
+
+You can disable health checks if your infrastructure handles this externally:
+
+```typescript
+import { matchMaker } from "@colyseus/core";
+matchMaker.setHealthChecksEnabled(false);
+```
+
+## PM2 metrics integration
+
+When PM2 is present, Colyseus automatically exposes `ccu` and `roomcount` metrics through `@pm2/io`:
+
+```bash
+pm2 monit   # real-time metrics in the terminal
+pm2 plus    # web dashboard (PM2 Plus subscription required)
+```
+
+These metrics update every time a room is created or destroyed and when clients join or leave.
